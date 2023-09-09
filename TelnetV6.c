@@ -169,7 +169,9 @@ VOID ProcessTriModeDataMessage(struct TNCINFO * TNC, struct ConnectionInfo * soc
 
 static int LogAge = 13;
 
-
+//M0ODZ
+//share messageParameters with cmd.c
+extern UCHAR messageParameters[];
 
 #ifdef WIN32
 
@@ -5512,7 +5514,13 @@ int Telnet_Connected(struct TNCINFO * TNC, struct ConnectionInfo * sockptr, SOCK
 					buffptr->Len = sprintf(&buffptr->Data[0], "*** Connected to APPL\r");
 
 				if (sockptr->NoCallsign == FALSE)
-					send(sockptr->socket, Signon, sprintf(Signon, "%s\r\n", TNC->Streams[Stream].MyCall), 0);
+					//M0ODZ
+					//Check if messageParameters contains information, if so then send callsign\r\nmessageParameters
+					//otherwise, send standard string (callsign)
+					if(messageParameters == "")
+						send(sockptr->socket, Signon, sprintf(Signon, "%s\r\n", TNC->Streams[Stream].MyCall), 0);
+					else
+						send(sockptr->socket, Signon, sprintf(Signon, "%s\r\n%s\r\n", TNC->Streams[Stream].MyCall, messageParameters), 0);
 			}
 		}
 	}

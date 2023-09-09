@@ -172,8 +172,10 @@ VOID RECONFIGTELNET (TRANSPORTENTRY * Session, char * Bufferptr, char * CmdTail,
 VOID HELPCMD(TRANSPORTENTRY * Session, char * Bufferptr, char * CmdTail, CMDX * CMD);
 VOID UZ7HOCMD(TRANSPORTENTRY * Session, char * Bufferptr, char * CmdTail, CMDX * UserCMD);
 
-
-
+//M0ODZ
+//messageParameters is a string that stores any passed text after a command eg cowsay M0ODZ was here
+//In that example "M0ODZ was here" would be stored
+UCHAR messageParameters[1024];
 
 char * __cdecl Cmdprintf(TRANSPORTENTRY * Session, char * Bufferptr, const char * format, ...)
 {
@@ -717,12 +719,25 @@ VOID APPLCMD(TRANSPORTENTRY * Session, char * Bufferptr, char * CmdTail, CMDX * 
 
 	ptr1 = &CMD->String[0];
 	ptr2 = APPName;
-
+	
 	while (*(ptr1) != ' ' && n--)
 		*(ptr2++) = *(ptr1++);
 
 	*(ptr2) = 0;
-	
+
+	//M0ODZ: CmdTail here contains any text typed after a command to run eg cowsay M0ODZ was here
+	//example: "cowsay M0ODZ                                  "
+	sprintf(messageParameters, "%s", CmdTail);
+	n = 1024;
+
+	ptr1 = &messageParameters[--n];
+
+	while ((*(ptr1) == ' ' || *(ptr1) == '\0' ) && n >= 0)
+	{
+		*(ptr1--) = 0;
+		n--;
+	}
+
 	if (Session->LISTEN)
 	{
 		Bufferptr = Cmdprintf(Session, Bufferptr, "Can't use %s while listening\r", APPName);
