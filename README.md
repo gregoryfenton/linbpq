@@ -1,5 +1,5 @@
-#Building linbpq on Linux (Debian or Ubuntu)
-###de M0ODZ Greg [Github link](https://github.com/gregoryfenton/linbpq)
+# Building linbpq on Linux (Debian or Ubuntu)
+### de M0ODZ Greg [Github link](https://github.com/gregoryfenton/linbpq)
 
 ```cd
 mkdir src
