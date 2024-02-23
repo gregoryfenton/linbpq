@@ -337,6 +337,10 @@
 				>
 			</File>
 			<File
+				RelativePath=".\getopt.c"
+				>
+			</File>
+			<File
 				RelativePath="..\CommonSource\HALDriver.c"
 				>
 			</File>
@@ -421,6 +425,10 @@
 				>
 			</File>
 			<File
+				RelativePath=".\mailapi.c"
+				>
+			</File>
+			<File
 				RelativePath="..\CommonSource\MailCommands.c"
 				>
 			</File>
@@ -458,6 +466,10 @@
 			</File>
 			<File
 				RelativePath="..\CommonSource\NNTPRoutines.c"
+				>
+			</File>
+			<File
+				RelativePath=".\nodeapi.c"
 				>
 			</File>
 			<File

@@ -67,17 +67,18 @@ struct RIGINFO
 
 	void * BPQtoRADIO_Q;			// Frames from switch for radio
 
-	UINT BPQPort;				// Port this radio is attached to. Bit Map, as may be more than one port controlling radio
+	uint64_t BPQPort;				// Port this radio is attached to. Bit Map, as may be more than one port controlling radio
 //	int PortNum;				// Number of port that defined this rig
 	int Interlock;				// Interlock group for this Radio
 	int IC735;					// Old ICOM with shorter freq message
 	int ICF8101;				// ICOM Land Mobile IC-F8101
 	char * CM108Device;			// Device to open for CM108 GPIO PTT
 
-	struct _EXTPORTDATA * PortRecord[32]; // BPQ32 port record(s) for this rig (null terminated list)
+	struct _EXTPORTDATA * PortRecord[64]; // BPQ32 port record(s) for this rig (null terminated list)
 
 	UCHAR RigAddr;
-	uint64_t ScanStopped;			// Scanning enabled if zero. Bits used for interlocked scanning (eg winmor/pactor on same port
+	int Channel;				// For sdrangel
+	uint64_t ScanStopped;		// Scanning enabled if zero. Bits used for interlocked scanning (eg winmor/pactor on same port
 	int ScanCounter;
 	int PollCounter;			// Don't poll too often;
 	int ScanFreq;				// Scan Rate
@@ -198,6 +199,10 @@ struct RIGINFO
 #define RTLUDP 16
 #define FLRIG 17
 #define SDRRADIO 18
+//G7TAJ
+#define SDRANGEL 19
+//G7TAJ
+#define FTDX10 20
 
 // Yease seem to have lots of variants of the same model
 
@@ -234,7 +239,9 @@ struct RIGPORTINFO
 	HANDLE hPTTDevice;				// May use a different port for PTT
 	UCHAR TXBuffer[500];			// Last message sent - saved for Retry
 	int TXLen;						// Len of last sent
-	UCHAR RXBuffer[500];			// Message being received - may not arrive all at once
+// ---- G7TAJ ----
+	UCHAR RXBuffer[8192];			// Message being received - may not arrive all at once. SDRANGLE needs a lot
+// ---- G7TAJ ----
 	int RXLen;						// Data in RXBUffer
 	BOOL AutoPoll;					// set if last command was a Timer poll 
 	// Local ScanStruct for Interactive Commands

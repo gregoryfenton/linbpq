@@ -125,6 +125,16 @@ VOID SetupPortRIGPointers();
 VOID PTTCATThread(struct RIGINFO *RIG);
 VOID ConnecttoHAMLIB(struct RIGPORTINFO * PORT);
 
+// ----- G7TAJ ----
+VOID ConnecttoSDRANGEL(struct RIGPORTINFO * PORT);
+VOID SDRANGELPoll(struct RIGPORTINFO * PORT);
+void ProcessSDRANGELFrame(struct RIGPORTINFO * PORT);
+VOID SDRANGELSendCommand(struct RIGPORTINFO * PORT, char * Command, char * Value);
+void SDRANGELProcessMessage(struct RIGPORTINFO * PORT);
+
+// ----- G7TAJ ----
+
+
 int SendPTCRadioCommand(struct TNCINFO * TNC, char * Block, int Length);
 int GetPTCRadioCommand(struct TNCINFO * TNC, char * Block);
 int BuildRigCtlPage(char * _REPLYBUFFER);
@@ -165,8 +175,9 @@ char FTRXModes[8][6] = {"LSB", "USB", "CW", "AM", "FM", "RTTY", "PKT", ""};
 
 char KenwoodModes[16][6] = {"????", "LSB",  "USB", "CW", "FM", "AM", "FSK", "????"};
 
-//char FT2000Modes[16][6] = {"????", "LSB",  "USB", "CW", "FM", "AM", "FSK", "PKT-L", "FSK-R", "PKT-FM", "FM-N", "PKT-U", "????"};
 char FT2000Modes[16][6] = {"????", "LSB",  "USB", "CW", "FM", "AM", "FSK", "CW-R", "PKT-L", "FSK-R", "PKT-FM", "FM-N", "PKT-U", "????"};
+
+char FTDX10Modes[16][9] = {"????", "LSB",  "USB", "CW-U", "FM", "AM", "RTTY-L", "CW-L", "DATA-L", "RTTY-U", "DATA-FM", "FM-N", "DATA-U", "AM-N", "PSK", "DATA-FM-N"};
 
 char FT991AModes[16][9] = {"????", "LSB",  "USB", "CW-U", "FM", "AM", "RTTY-LSB", "CW-L", "DATA-LSB", "RTTY-USB", "DATA-FM", "FM-N", "DATA-USB", "AM-N", "C4FM", "????"};
 
@@ -184,11 +195,15 @@ int HAMLIBMasterRunning = 0;
 int HAMLIBSlaveRunning = 0;
 int FLRIGRunning = 0;
 
+// ---- G7TAJ ----
+int SDRANGELRunning = 0;
+// ---- G7TAJ ----
+
 char * RigWebPage = 0;
 int RigWebPageLen = 0;
 
 
-struct RIGPORTINFO * PORTInfo[34] = {NULL};		// Records are Malloc'd
+struct RIGPORTINFO * PORTInfo[MAXBPQPORTS + 2] = {NULL};		// Records are Malloc'd
 
 struct RIGINFO * DLLRIG = NULL;			// Rig record for dll PTT interface (currently only for UZ7HO);
 
@@ -550,6 +565,7 @@ VOID Rig_PTTEx(struct RIGINFO * RIG, BOOL PTTState, struct TNCINFO * TNC)
 		case ICOM:
 		case KENWOOD:
 		case FT2000:
+		case FTDX10:
 		case FT991A:
 		case FLEX:
 		case NMEA:
@@ -768,7 +784,7 @@ int Rig_Command(TRANSPORTENTRY * Session, char * Command)
 		{
 			RIG = &PORT->Rigs[i];
 
-			if (RIG->BPQPort & (1 << Port))
+			if (RIG->BPQPort & ((uint64_t)1 << Port))
 				goto portok;
 		}
 	}
@@ -795,6 +811,26 @@ static char Req[] = "<?xml version=\"1.0\"?>\r\n"
 					"%s"
 					"</methodCall>\r\n";
 
+
+// ---- G7TAJ ----
+static char SDRANGEL_MsgHddr[] = "PATCH HTTP/1.1\r\n"
+					"User-Agent: BPQ32\r\n"
+					"Host: %s\r\n"
+					"accept: application/json"
+				 	"Content-Type: application/json"
+					"Content-length: %d\r\n"
+					"\r\n%s";
+
+static char SDRANGEL_FREQ_DATA[] = "{"
+    "\"deviceHwType\": \"%s\", "
+    "\"direction\": 0,"
+    "\"rtlSdrSettings\": {"
+    "  \"centerFrequency\": \"%s\""
+    "}}";
+
+//freq =  10489630000
+
+// ---- G7TAJ ----
 
 
 
@@ -1106,7 +1142,6 @@ int Rig_CommandEx(struct RIGPORTINFO * PORT, struct RIGINFO * RIG, TRANSPORTENTR
 				return FALSE;
 			}
 
-			
 			// Build a ScanEntry in the buffer
 
 			FreqPtr = (struct ScanEntry *)buffptr->Data;
@@ -1187,11 +1222,12 @@ int Rig_CommandEx(struct RIGPORTINFO * PORT, struct RIGINFO * RIG, TRANSPORTENTR
 		char c;
 		int val;
  		char * ptr1;
+		char * ptr2;
 		int Len;
 
 		if (n < 3)
 		{
-			strcpy(Command, "Sorry - Invalid Format - should be HEX Hexstring\r");
+			strcpy(Command, "Sorry - Invalid Format - should be CMD Params\r");
 			return FALSE;
 		}
 
@@ -1241,8 +1277,6 @@ int Rig_CommandEx(struct RIGPORTINFO * PORT, struct RIGINFO * RIG, TRANSPORTENTR
 			}
 
 			*(CmdPtr++) = 0xFD;
-
- 		
 			*(CmdPtr) = 0; 
 
 			Len = (int)(CmdPtr - (char *)&buffptr[30]);
@@ -1251,6 +1285,7 @@ int Rig_CommandEx(struct RIGPORTINFO * PORT, struct RIGINFO * RIG, TRANSPORTENTR
 		case KENWOOD:
 		case FT991A:
 		case FT2000:
+		case FTDX10:
 		case FLEX:
 		case NMEA:
 
@@ -1281,6 +1316,31 @@ int Rig_CommandEx(struct RIGPORTINFO * PORT, struct RIGINFO * RIG, TRANSPORTENTR
 			Len = 5;
 			break;
 
+		case FLRIG:
+
+			// Two string params - command and params eg rig.set_ptt <i4>1</i4>"
+			// or maybe param could be format data - eg i 1
+
+			_strlwr(ptr1);
+
+			ptr2 = strlop(ptr1, ' ');
+
+			if (ptr2 == 0)
+			{
+				strcpy(Command, "Sorry - Invalid Format - should be CMD cmd params\r");
+				return FALSE;
+			}
+
+			strlop(ptr2, ' ');
+
+			FLRIGSendCommand(PORT, ptr1, ptr2);
+
+			return FALSE;
+
+
+
+
+
 		default:
 			sprintf(Command, "Sorry - CMD not supported on your Radio\r");
 			return FALSE;
@@ -1288,7 +1348,9 @@ int Rig_CommandEx(struct RIGPORTINFO * PORT, struct RIGINFO * RIG, TRANSPORTENTR
 
 		FreqPtr[0].Cmd1Len = Len;		// for ICOM
 		C_Q_ADD(&RIG->BPQtoRADIO_Q, buffptr);
-		return TRUE;
+
+		sprintf(Command, "Ok\r");
+		return FALSE;
 	}
 
 	if (_memicmp(FreqString, "Chan", 4) == 0)
@@ -1836,6 +1898,7 @@ int Rig_CommandEx(struct RIGPORTINFO * PORT, struct RIGINFO * RIG, TRANSPORTENTR
 
 	case KENWOOD:
 	case FT2000:
+	case FTDX10:
 	case FT991A:
 	case FLEX:
 			
@@ -1849,6 +1912,10 @@ int Rig_CommandEx(struct RIGPORTINFO * PORT, struct RIGINFO * RIG, TRANSPORTENTR
 		{
 			if (PORT->PortType == FT2000)
 				if (_stricmp(FT2000Modes[ModeNo], Mode) == 0)
+				break;
+
+			if (PORT->PortType == FTDX10)
+				if (_stricmp(FTDX10Modes[ModeNo], Mode) == 0)
 				break;
 
 			if (PORT->PortType == FT991A)
@@ -1891,8 +1958,8 @@ int Rig_CommandEx(struct RIGPORTINFO * PORT, struct RIGINFO * RIG, TRANSPORTENTR
 		if (PORT->PortType == FT2000)
 			FreqPtr->Cmd1Len = sprintf(Poll, "FA%s;MD0%X;FA;MD;", &FreqString[1], ModeNo);
 		else
-		if (PORT->PortType == FT991A)
-			FreqPtr->Cmd1Len = sprintf(Poll, "FA%s;MD0%X;FA;MD;", &FreqString, ModeNo);
+		if (PORT->PortType == FT991A || PORT->PortType == FTDX10)
+			FreqPtr->Cmd1Len = sprintf(Poll, "FA%s;MD0%X;FA;MD;", FreqString, ModeNo);
 		else
 		if (PORT->PortType == FLEX)
 			FreqPtr->Cmd1Len = sprintf(Poll, "ZZFA00%s;ZZMD%02d;ZZFA;ZZMD;", &FreqString[1], ModeNo);
@@ -2074,7 +2141,7 @@ int Rig_CommandEx(struct RIGPORTINFO * PORT, struct RIGINFO * RIG, TRANSPORTENTR
 				memcpy(&cmd[1], &USB, 4); 
 			else if (strcmp(Mode, "LSB") == 0)
 				memcpy(&cmd[1], &LSB, 4); 
-		
+
 			cmd[0] = 1;
 			len = sendto(PORT->remoteSock, cmd, 5,  0, &PORT->remoteDest, sizeof(struct sockaddr));
 		}
@@ -2084,7 +2151,43 @@ int Rig_CommandEx(struct RIGPORTINFO * PORT, struct RIGINFO * RIG, TRANSPORTENTR
 		sprintf(Command, "Ok\r");
 		return FALSE;
 	}
+// --- G7TAJ ----
+	case SDRANGEL:
+	{
+		char cmd[80];
+		int len = sprintf(cmd, "%.0f", Freq);
 
+		strcpy(PORT->ScanEntry.Cmd2Msg, Mode);
+		strcpy(PORT->ScanEntry.Cmd3Msg, FilterString);
+		
+		if (Freq > 0.0)
+		{
+			SDRANGELSendCommand(PORT, "FREQSET", cmd);
+			sprintf(Command, "Ok\r");
+			return FALSE;
+		}
+//TODO
+/*                else if (PORT->ScanEntry.Cmd2Msg[0] && Mode[0] != '*')
+                {
+                        sprintf(cmd, "<i4>%s</i4>", PORT->ScanEntry.Cmd2Msg);
+                        FLRIGSendCommand(PORT, "rig.set_mode", cmd);
+                }
+
+                else if (PORT->ScanEntry.Cmd3Msg[0] && strcmp(PORT->ScanEntry.Cmd3Msg, "0") != 0)
+                {
+                        sprintf(cmd, "<i4>%s</i4>", PORT->ScanEntry.Cmd3Msg);
+                        FLRIGSendCommand(PORT, "rig.set_bandwidth", cmd);
+                }
+*/
+                else
+                {
+                        sprintf(Command, "Sorry - Nothing to do\r");
+                        return FALSE;
+                }
+
+                PORT->AutoPoll = 0;
+	}
+// --- G7TAJ ----
 
 
 
@@ -2125,18 +2228,18 @@ DllExport BOOL APIENTRY Rig_Init()
 
 	memset(&RIGTNC, 0, sizeof(struct TNCINFO));
 
-	TNCInfo[40] = TNC;
+	TNCInfo[70] = TNC;
 
 	// Get config info
 
 	NumberofPorts = 0;
 
-	for (port = 0; port < 32; port++)
+	for (port = 0; port < MAXBPQPORTS; port++)
 		PORTInfo[port] = NULL;
 
 	// See if any rigcontrol defined (either RADIO or RIGCONTROL lines)
 
-	for (port = 0; port < 32; port++)
+	for (port = 0; port < MAXBPQPORTS; port++)
 	{
 		if (RadioConfigMsg[port])
 			NeedRig++;
@@ -2151,7 +2254,7 @@ DllExport BOOL APIENTRY Rig_Init()
 
 #ifndef LINBPQ
 
-	TNC->Port = 40;
+	TNC->Port = 70;
 	CreatePactorWindow(TNC, "RIGCONTROL", "RigControl", 10, PacWndProc, 550, NeedRig * 20 + 60, NULL);
 	hDlg = TNC->hDlg;
 
@@ -2160,7 +2263,7 @@ DllExport BOOL APIENTRY Rig_Init()
 	TNC->ClientHeight = NeedRig * 20 + 60;
 	TNC->ClientWidth = 550;
 
-	for (port = 0; port < 33; port++)
+	for (port = 0; port < MAXBPQPORTS; port++)
 	{
 		if (RadioConfigMsg[port])
 		{
@@ -2193,7 +2296,7 @@ DllExport BOOL APIENTRY Rig_Init()
 				struct TNCINFO * PTCTNC;
 				int n;
 
-				for (n = 1; n < 33; n++)
+				for (n = 1; n < MAXBPQPORTS; n++)
 				{
 					PTCTNC = TNCInfo[n];
 
@@ -2271,6 +2374,13 @@ DllExport BOOL APIENTRY Rig_Init()
 		}
 		else if (PORT->PortType == RTLUDP)
 			ConnecttoRTLUDP(PORT);
+//---- G7TAJ ----
+		else if (PORT->PortType == SDRANGEL)
+		{
+			SDRANGELRunning = 1;
+			ConnecttoSDRANGEL(PORT);
+		}
+//---- G7TAJ ----
 		else if (PORT->HIDDevice)		// This is RAWHID, Not CM108
 			OpenHIDPort(PORT, PORT->IOBASE, PORT->SPEED);
 		else if (PORT->PTC == 0 && _stricmp(PORT->IOBASE, "CM108") != 0)
@@ -2295,7 +2405,7 @@ DllExport BOOL APIENTRY Rig_Init()
 		{
 			int j;
 			int k = 0;
-			int BitMask;
+			uint64_t BitMask;
 			struct _EXTPORTDATA * PortEntry;
 
 			RIG = &PORT->Rigs[i];
@@ -2309,7 +2419,7 @@ DllExport BOOL APIENTRY Rig_Init()
 			// then those with neither
 
 			BitMask = RIG->BPQPort;
-			for (j = 0; j < 32; j++)
+			for (j = 0; j < MAXBPQPORTS; j++)
 			{
 				if (BitMask & 1)
 				{
@@ -2322,7 +2432,7 @@ DllExport BOOL APIENTRY Rig_Init()
 			}
 
 			BitMask = RIG->BPQPort;
-			for (j = 0; j < 32; j++)
+			for (j = 0; j < MAXBPQPORTS; j++)
 			{
 				if (BitMask & 1)
 				{
@@ -2335,7 +2445,7 @@ DllExport BOOL APIENTRY Rig_Init()
 			}
 
 			BitMask = RIG->BPQPort;
-			for (j = 0; j < 32; j++)
+			for (j = 0; j < MAXBPQPORTS; j++)
 			{
 				if (BitMask & 1)
 				{
@@ -2421,7 +2531,10 @@ DllExport BOOL APIENTRY Rig_Close()
 
 	HAMLIBMasterRunning = 0;			// Close HAMLIB thread(s)
 	HAMLIBSlaveRunning = 0;				// Close HAMLIB thread(s)
-	FLRIGRunning = 0;					// Close FLRIG thread(s)
+	FLRIGRunning = 0;				// Close FLRIG thread(s)
+// ---- G7TAJ ----
+	SDRANGELRunning = 0;				// Close SDRANGEL thread(s)
+// ---- G7TAJ ----
 
 	for (p = 0; p < NumberofPorts; p++)
 	{
@@ -2492,7 +2605,7 @@ DllExport BOOL APIENTRY Rig_Close()
 
 	// And free the TNC config info
 
-	for (p = 1; p < 33; p++)
+	for (p = 1; p < MAXBPQPORTS; p++)
 	{
 		TNC = TNCInfo[p];
 
@@ -2544,6 +2657,10 @@ BOOL Rig_Poll()
 					ConnecttoFLRIG(PORT);
 				else if (PORT->PortType == RTLUDP)
 					ConnecttoRTLUDP(PORT);
+// ---- G7TAJ ----
+				else if (PORT->PortType == SDRANGEL)
+					ConnecttoSDRANGEL(PORT);
+// ---- G7TAJ ----
 				else if (PORT->HIDDevice)
 					OpenHIDPort(PORT, PORT->IOBASE, PORT->SPEED);
 				else if (PORT->PTC == 0
@@ -2610,6 +2727,7 @@ BOOL Rig_Poll()
 
 		case KENWOOD:
 		case FT2000:
+		case FTDX10:
 		case FT991A:
 		case FLEX:
 		case NMEA:
@@ -2632,7 +2750,12 @@ BOOL Rig_Poll()
 
 		case FLRIG:
 			FLRIGPoll(PORT);
+			break;
+// ---- G7TAJ ----
+		case SDRANGEL:
+			SDRANGELPoll(PORT);
 			break;		}
+// ---- G7TAJ ----
 	}
 
 	// Build page for Web Display
@@ -2674,7 +2797,7 @@ int OpenRigCOMMPort(struct RIGPORTINFO * PORT, VOID * Port, int Speed)
 	if (PORT->remoteSock)		// Using WINMORCONTROL
 		return TRUE;
 
-	if (PORT->PortType == FT2000 || PORT->PortType == FT991A || strcmp(PORT->Rigs[0].RigName, "FT847") == 0)		// FT2000 and similar seem to need two stop bits
+	if (PORT->PortType == FT2000 || PORT->PortType == FT991A || PORT->PortType == FTDX10 || strcmp(PORT->Rigs[0].RigName, "FT847") == 0)		// FT2000 and similar seem to need two stop bits
 		PORT->hDevice = OpenCOMPort((VOID *)Port, Speed, FALSE, FALSE, PORT->Alerted, TWOSTOPBITS);
 	else if (PORT->PortType == NMEA)
 		PORT->hDevice = OpenCOMPort((VOID *)Port, Speed, FALSE, FALSE, PORT->Alerted, ONESTOPBIT);
@@ -2698,7 +2821,6 @@ int OpenRigCOMMPort(struct RIGPORTINFO * PORT, VOID * Port, int Speed)
 		COMClearDTR(PORT->hDevice);
 	else
 		COMSetDTR(PORT->hDevice);
-
 	if (strcmp(PORT->Rigs[0].RigName, "FT847") == 0)
 	{
 		// Looks like FT847 Needa a "Cat On" Command
@@ -2707,6 +2829,7 @@ int OpenRigCOMMPort(struct RIGPORTINFO * PORT, VOID * Port, int Speed)
 
 		WriteCOMBlock(PORT->hDevice, CATON, 5);
 	}
+
 
 	if (PORT->PortType == NMEA)
 	{
@@ -2887,6 +3010,7 @@ void CheckRX(struct RIGPORTINFO * PORT)
 
 	case KENWOOD:
 	case FT2000:
+	case FTDX10:
 	case FT991A:
 	case FLEX:
 
@@ -3014,6 +3138,14 @@ BOOL RigWriteCommBlock(struct RIGPORTINFO * PORT)
 #ifndef WIN32
 		BytesWritten = write(PORT->hDevice, PORT->TXBuffer, PORT->TXLen);
 #else
+		DWORD Mask = 0;
+		int Err;
+
+		Err = GetCommModemStatus(PORT->hDevice, &Mask);
+
+		if (Mask == 0)		// trap com0com other end not open
+			return TRUE;
+
 		fWriteStat = WriteFile(PORT->hDevice, PORT->TXBuffer, PORT->TXLen, &BytesWritten, NULL );
 #endif
 		if (PORT->TXLen != BytesWritten)
@@ -3160,7 +3292,7 @@ CheckOtherPorts:
 	{
 		PortRecord = RIG->PortRecord[i];
 
-		if (PortRecord->PORT_EXT_ADDR(6, PortRecord->PORTCONTROL.PORTNUMBER, 1))
+		if (PortRecord->PORT_EXT_ADDR && PortRecord->PORT_EXT_ADDR(6, PortRecord->PORTCONTROL.PORTNUMBER, 1))
 		{
 			// 1 means can't change - release all
 
@@ -4673,6 +4805,17 @@ Loop:
 			strcpy(RIG->WEB_MODE, FT991AModes[Mode]);
 			strcpy(RIG->ModeString, RIG->WEB_MODE);
 		}
+		else if (PORT->PortType == FTDX10)
+		{
+			Mode = Msg[3] - 48;
+			if (Mode > 16)
+				Mode -= 7;
+			
+			if (Mode > 15) Mode = 15;
+			SetWindowText(RIG->hMODE, FTDX10Modes[Mode]);
+			strcpy(RIG->WEB_MODE, FTDX10Modes[Mode]);
+			strcpy(RIG->ModeString, RIG->WEB_MODE);
+		}
 		else if (PORT->PortType == FLEX)
 		{
 			Mode = atoi(&Msg[3]);
@@ -5529,6 +5672,78 @@ struct RIGINFO * RigConfig(struct TNCINFO * TNC, char * buf, int Port)
 		goto CheckOtherParams;
 	}
 
+// ---- G7TAJ ----
+
+	if (_memicmp(ptr, "sdrangel", 5) == 0)
+	{
+		// each instance (ip addr/port) of sdrangle can have one or more sampling devices (eg rltsdr) each with one ot
+		// more channels (eg ssb demod, ssb mod). each set of sampling device = channel(s) is a device set.
+
+		// We poll all devices/channels at once. we one PORT record plus a RIG record for each channel
+
+		// Need parameters - Host:Port device channel. Device and Channel will default to zero
+
+		int device = 0, channel = 0;
+		char * Name;
+		char * nptr1;
+		char * nptr2;
+
+
+		ptr = strtok_s(NULL, " \t\n\r", &Context);
+
+		if (ptr == NULL || strlen(ptr) > 79) return FALSE;
+
+		Name = strtok_s(NULL, " \t\n\r", &Context);
+		nptr1 = strtok_s(NULL, " \t\n\r", &Context);
+		nptr2 = strtok_s(NULL, " \t\n\r", &Context);
+
+		if (nptr1 == 0 || nptr2 == 0 || Name == NULL || strlen(Name) > 9)
+			return FALSE;
+
+		device = atoi(nptr1);	
+		channel = atoi(nptr2);
+
+		// Have a parameter to define port. Will decode it later
+
+		// See if already defined. PORT->IOBASE has Host:Port
+
+		for (i = 0; i < NumberofPorts; i++)
+		{
+			PORT = PORTInfo[i];
+
+			if (strcmp(PORT->IOBASE, ptr) == 0) 
+				goto AngelRigFound;
+		}
+
+		// New Port
+
+		PORT = PORTInfo[NumberofPorts++] = zalloc(sizeof(struct RIGPORTINFO));
+		PORT->PortType = SDRANGEL;
+		PORT->ConfiguredRigs = 0;
+		strcpy(PORT->IOBASE, ptr);
+
+		// Decode host
+		
+		DecodeHAMLIBAddr(PORT, ptr);
+
+
+AngelRigFound:
+
+		RIG = &PORT->Rigs[PORT->ConfiguredRigs++];
+		RIG->RIGOK = TRUE;
+		RIG->PORT = PORT;
+		RIG->RigAddr = device;
+		RIG->Channel = channel;
+
+		strcpy(RIG->RigName, Name);
+
+		ptr = strtok_s(NULL, " \t\n\r", &Context);
+
+		// look for scan params
+
+		goto CheckOtherParams;
+	}
+// ---- G7TAJ ----
 
 	if ((_memicmp(ptr, "VCOM", 4) == 0) && TNC->Hardware == H_SCS)		// Using Radio Port on PTC
 		COMPort = 0;
@@ -5722,6 +5937,13 @@ PortFound:
 	if (strcmp(RigName, "FT2000") == 0 && PORT->PortType == YAESU)
 	{
 		PORT->PortType = FT2000;
+	}
+
+	// FTDX10 seems to be different to most other YAESU types
+
+	if (strcmp(RigName, "FTDX10") == 0 && PORT->PortType == YAESU)
+	{
+		PORT->PortType = FTDX10;
 	}
 
 	// FT991A seems to be different to most other YAESU types
@@ -6015,7 +6237,7 @@ CheckOtherParams:
 			RIG->defaultFreq = atoi(&ptr[12]);
 		}
 		
-		else if (atoi(ptr))
+		else if (atoi(ptr) || ptr[2] == ':')
 			break;					// Not scan freq oe timeband, so see if another param
 
 		ptr = strtok_s(NULL, " \t\n\r", &Context);
@@ -6284,7 +6506,7 @@ CheckOtherParams:
 		strcpy(RIG->PTTOff, "TX0;");
 		RIG->PTTOffLen = 4;
 	}
-	else if	(PORT->PortType == FT991A)
+	else if	(PORT->PortType == FT991A || PORT->PortType == FTDX10)
 	{	
 		RIG->PollLen = 7;
 		strcpy(RIG->Poll, "FA;MD0;");
@@ -6393,7 +6615,7 @@ CheckScan:
 		VARAMode[0] = 0;
 		Dwell = 0.0;
 
-		while (strchr(ptr, ':'))
+		while (ptr && strchr(ptr, ':'))
 		{
 			// New TimeBand
 
@@ -6414,6 +6636,9 @@ CheckScan:
 
 			ptr = strtok_s(NULL, " \t\n\r", &Context);										
 		}
+
+		if (ptr == 0)
+			break;
 
 		if (strchr(ptr, ','))			// New Format
 		{
@@ -6614,6 +6839,24 @@ CheckScan:
 				}
 			}
 			break;
+
+		case FTDX10:
+
+			for (ModeNo = 0; ModeNo < 16; ModeNo++)
+			{
+				if (strlen(Mode) == 1)
+				{
+					if (FTDX10Modes[ModeNo][0] == Mode[0])
+						break;
+				}
+				else
+				{
+					if (_stricmp(FTDX10Modes[ModeNo], Mode) == 0)
+						break;
+				}
+			}
+			break;
+
 
 
 		case FT100:						
@@ -6994,7 +7237,7 @@ CheckScan:
 		{	
 			FreqPtr[0]->Cmd1Len = sprintf(CmdPtr, "FA%s;MD0%X;FA;MD;", &FreqString[1], ModeNo);
 		}
-		else if	(PORT->PortType == FT991A)
+		else if	(PORT->PortType == FT991A || PORT->PortType == FTDX10)
 		{	
 			FreqPtr[0]->Cmd1Len = sprintf(CmdPtr, "FA%s;MD0%X;FA;MD0;", &FreqString, ModeNo);
 		}
@@ -7140,7 +7383,7 @@ VOID SetupScanInterLockGroups(struct RIGINFO *RIG)
 
 	// Find TNC ports in this Rig's scan group
 
-	for (port = 1; port < 33; port++)
+	for (port = 1; port < MAXBPQPORTS; port++)
 	{
 		TNC = TNCInfo[port];
 
@@ -7152,7 +7395,7 @@ VOID SetupScanInterLockGroups(struct RIGINFO *RIG)
 		if (TNC->RXRadio == Interlock)
 		{
 			int p = PortRecord->PORTNUMBER;
-			RIG->BPQPort |=  (1 << p);
+			RIG->BPQPort |= ((uint64_t)1 << p);
 			sprintf(PortString, "%s,%d", PortString, p);
 			TNC->RIG = RIG;
 
@@ -7162,7 +7405,7 @@ VOID SetupScanInterLockGroups(struct RIGINFO *RIG)
 		if (TNC->TXRadio == Interlock && TNC->TXRadio != TNC->RXRadio)
 		{
 			int p = PortRecord->PORTNUMBER;
-			RIG->BPQPort |=  (1 << p);
+			RIG->BPQPort |= ((uint64_t)1 << p);
 			sprintf(TxPortString, "%s,%d", TxPortString, p);
 			TNC->TXRIG = RIG;
 
@@ -7189,7 +7432,7 @@ VOID SetupPortRIGPointers()
 	struct TNCINFO * TNC;
 	int port;
 
-	for (port = 1; port < 33; port++)
+	for (port = 1; port < MAXBPQPORTS; port++)
 	{
 		TNC = TNCInfo[port];
 
@@ -9633,8 +9876,616 @@ VOID ConnecttoRTLUDP(struct RIGPORTINFO * PORT)
 	PORT->Alerted = TRUE;
 }
 
+char * getObjectFromArray(char * Msg);	// This gets the next object from an array ({} = object, [] = array
+
+
+
+char * getArrayFromMsg(char * Msg)
+{
+	// This gets the next object from an array ({} = object, [] = array
+	// We look for the end of the object same number of { and }, teminate after } and return pointer to next object
+	// So we have terminated Msg, and returned next object in array
+
+	// Only call if Msg is the next array in Msg
+
+
+	char * ptr = Msg;
+	char c;
+
+	int Open = 0;
+	int Close = 0;
+		
+	while (c = *(ptr++))
+	{
+		if (c == '[') Open ++; else if (c == ']') Close ++;
+
+		if (Open == Close)
+		{
+			*(ptr++) = 0;
+			return ptr;
+		}
+	}
+	return 0;
+}
+
+
+//----- G7TAJ -----
+
+void ProcessSDRANGELFrame(struct RIGPORTINFO * PORT)
+{
+
+	int Length;
+
+	char * msg;
+	char * rest;
+
+	struct RIGINFO * RIG;
+	char * ptr, * ptr1, * ptr2, * ptr3, * pos;
+	int Len, TotalLen;
+	char cmd[80];
+	char ReqBuf[256];
+	char SendBuff[256];
+	int chunklength;
+	int headerlen;
+	int i, n = 0;
+	char * Sets;
+	char * Rest;
+	char * Set;
+	int channelcount;
+	char * channels;
+	char * channel;
+	char * samplingDevice;
+	char * save;
+  
+	//Debugprintf("Process SDRANGEL Frame %d\n", PORT->RXLen);
+
+	msg = PORT->RXBuffer;
+	Length = PORT->RXLen;
+
+	msg[Length] = 0;
+
+	ptr1 = strstr(msg, "Transfer-Encoding: chunked" );
+
+	if (ptr1 == NULL)
+		return;
+
+	ptr2 = strstr(ptr1, "\r\n\r\n");
+
+	if (ptr2 == NULL)
+		return;
+
+	// ptr2 +4 points to the length of the first chunk (in hex), terminated by crlf
+
+	chunklength = (int)strtol(ptr2 + 4, &ptr3, 16); 
+	ptr3 += 2;		// pointer to first chunk data
+	headerlen = ptr3 - msg;
+
+	// make sure we have first chunk
+
+	if (chunklength + headerlen > Length)
+		return;
+
+	PORT->RXLen = 0; //we have all the frame now
+	PORT->Timeout = 0;
+
+	if (strstr(ptr3, "deviceSets") == 0)
+	{
+		return;
+	}
+
+	// Message has info for all rigs
+
+	// As we mess with the message, save a copy and restore for each Rig
+
+	save = _strdup(ptr3);
+
+	for (i = 0; i < PORT->ConfiguredRigs; i++)
+	{
+		strcpy(ptr3, save);
+		n = 0;
+
+		RIG = &PORT->Rigs[i];	
+		RIG->RIGOK = 1;
+
+		// we can have one or more sampling devices (eg rltsdr) each with one or
+		// more channels (eg ssb demod, ssb mod). each set of sampling device = channel(s) is a device set.
+
+		// Find Device Set for this device (in RIG->
+
+		// Message Structure is
+
+		//{
+		//	"deviceSets": [...].
+		//	"devicesetcount": 2,
+		//	"devicesetfocus": 0
+		//}
+
+		// Get the device sets (JSON [..] is an array
+
+		Sets = strchr(ptr3, '[');
+
+		if (Sets == 0)
+			continue;
+
+		Rest = getArrayFromMsg(Sets);
+
+		// Do we need to check devicesetcount ??. Maybe use to loop through sets, or just stop at end
+
+		// get the set for our device
+
+		while (RIG->RigAddr >= n)
+		{
+			Set = strchr(Sets, '{');		// Position to start of first Object
+
+			if (Set == 0)
+				break;
+
+			Sets = getObjectFromArray(Set);
+			n++;
+		}
+
+		if (Set == 0)
+			continue;
+
+
+		// Now get the channel. looking for key "index": 
+
+		// we could have a number of sampling devices and channels but for now get sampling device freq
+		// and first channel freq. Channels are in an Array
+
+		if ((ptr = strstr(Set, "channelcount")) == 0)
+			continue;
+	
+		channelcount = atoi(&ptr[15]);
+		
+		if ((channels = strchr(Set, '[')) == 0)
+			continue;
+
+		samplingDevice = getArrayFromMsg(channels);
+
+		while(channelcount--)
+		{
+			channel = strchr(channels, '{');
+			channels = getObjectFromArray(channel);
+
+			if ((ptr = strstr(channel, "index")))
+			{
+				n = atoi(&ptr[7]);
+				if (n == RIG->Channel)
+					break;
+			}
+		}
+
+
+
+		if (pos = strstr(samplingDevice, "centerFrequency")) 	//"centerFrequency": 10489630000,
+		{
+			pos += 18;
+			strncpy(cmd, pos, 20);
+			RIG->RigFreq = atof(cmd) / 1000000.0;
+		}
+
+		if (pos = strstr(channel, "deltaFrequency")) 
+		{
+			pos += 17;
+			strncpy(cmd, pos, 20);
+			RIG->RigFreq += (atof(cmd) + RIG->rxOffset) / 1000000.0;;
+		}
+
+
+		_gcvt(RIG->RigFreq, 9, RIG->Valchar);
+
+		sprintf(RIG->WEB_FREQ,"%s", RIG->Valchar);
+		SetWindowText(RIG->hFREQ, RIG->WEB_FREQ);
+
+		// we could get mode from Title line:
+		//"title": "SSB Demodulator",
+
+		if (pos = strstr(channel, "title")) 	
+		{
+			pos += 9;
+			strncpy(cmd, pos, 20);
+			strlop(pos, ' ');
+			strncpy(RIG->ModeString, pos, 15);
+			sprintf(RIG->WEB_MODE, "%s", RIG->ModeString);
+			SetWindowText(RIG->hMODE, RIG->WEB_MODE);
+		}
+
+	}
+
+
+	/*
+	while (msg && msg[0])
+	{
+	rest = strlop(msg, ',');
+
+	if ( pos = strstr(msg, "centerFrequency")) 	//"centerFrequency": 10489630000,
+	{
+	pos += 18;
+	strncpy(cmd, pos,20);
+
+	RIG->RigFreq = atof(cmd) / 1000000.0;
+
+	//					printf("FREQ=%f\t%s\n", RIG->RigFreq, cmd);
+
+	_gcvt(RIG->RigFreq, 9, RIG->Valchar);
+
+	sprintf(RIG->WEB_FREQ,"%s", RIG->Valchar);
+	SetWindowText(RIG->hFREQ, RIG->WEB_FREQ);
+	}
+
+	else if (memcmp(msg, "Mode:", 5) == 0)
+	{
+	if (strlen(&msg[6]) < 15)
+	strcpy(RIG->ModeString, &msg[6]);
+	}
+
+	else if (memcmp(msg, "Passband:", 9) == 0)
+	{
+	RIG->Passband = atoi(&msg[10]);
+	sprintf(RIG->WEB_MODE, "%s/%d", RIG->ModeString, RIG->Passband);
+	SetWindowText(RIG->hMODE, RIG->WEB_MODE);
+	}
+
+	msg = rest;
+	}
+	*/
+	free (save);
+}
+
+
+
+VOID SDRANGELThread(struct RIGPORTINFO * PORT);
+
+VOID ConnecttoSDRANGEL(struct RIGPORTINFO * PORT)
+{
+	if (SDRANGELRunning)
+		_beginthread(SDRANGELThread, 0, (void *)PORT);
+	return ;
+}
+
+VOID SDRANGELThread(struct RIGPORTINFO * PORT)
+{
+	// Opens sockets and looks for data
+	char Msg[255];
+	int err, i, ret;
+	u_long param=1;
+	BOOL bcopt=TRUE;
+	fd_set readfs;
+	fd_set errorfs;
+	struct timeval timeout;
+
+	if (PORT->CONNECTING)
+		return;
+
+	PORT->RXLen = 0;
+
+	PORT->CONNECTING = 1;
+
+	if (PORT->remoteSock)
+	{
+		closesocket(PORT->remoteSock);
+	}
+
+	PORT->remoteSock = 0;
+	PORT->remoteSock = socket(AF_INET,SOCK_STREAM,0);
+
+	if (PORT->remoteSock == INVALID_SOCKET)
+	{
+		i=sprintf(Msg, "Socket Failed for SDRAngel socket - error code = %d\r\n", WSAGetLastError());
+		WritetoConsole(Msg);
+
+	 	PORT->CONNECTING = FALSE;
+  	 	return;
+	}
+
+	setsockopt(PORT->remoteSock, SOL_SOCKET, SO_REUSEADDR, (const char FAR *)&bcopt, 4);
+	setsockopt(PORT->remoteSock, IPPROTO_TCP, TCP_NODELAY, (const char FAR *)&bcopt, 4);
+
+	if (connect(PORT->remoteSock,(LPSOCKADDR) &PORT->remoteDest,sizeof(PORT->remoteDest)) == 0)
+	{
+		//
+		//	Connected successful
+		//
+
+		ioctl(PORT->remoteSock, FIONBIO, &param);
+	}
+	else
+	{
+		if (PORT->Alerted == FALSE)
+		{
+			struct sockaddr_in * destaddr = (SOCKADDR_IN * )&PORT->remoteDest;
+
+			err = WSAGetLastError();
+
+   			sprintf(Msg, "Connect Failed for SDRAngel socket - error code = %d Port %d\r\n",
+				err, htons(destaddr->sin_port));
+
+			WritetoConsole(Msg);
+				PORT->Alerted = TRUE;
+		}
+
+		closesocket(PORT->remoteSock);
+
+		PORT->remoteSock = 0;
+	 	PORT->CONNECTING = FALSE;
+		return;
+	}
+
+	PORT->CONNECTED = TRUE;
+	PORT->CONNECTING = 0;
+
+	PORT->hDevice = (HANDLE)1;				// simplifies check code
+
+	PORT->Alerted = TRUE;
+
+	while (PORT->CONNECTED && SDRANGELRunning)
+	{
+		FD_ZERO(&readfs);
+		FD_ZERO(&errorfs);
+
+		FD_SET(PORT->remoteSock,&readfs);
+		FD_SET(PORT->remoteSock,&errorfs);
+
+		timeout.tv_sec = 5;
+		timeout.tv_usec = 0;
+
+		ret = select((int)PORT->remoteSock + 1, &readfs, NULL, &errorfs, &timeout);
+
+		if (SDRANGELRunning == 0)
+			return;
+
+		if (ret == SOCKET_ERROR)
+		{
+			Debugprintf("SDRAngel Select failed %d ", WSAGetLastError());
+			goto Lost;
+		}
+
+		if (ret > 0)
+		{
+			//	See what happened
+
+			if (FD_ISSET(PORT->remoteSock, &readfs))
+			{
+				SDRANGELProcessMessage(PORT);
+			}
+
+			if (FD_ISSET(PORT->remoteSock, &errorfs))
+			{
+Lost:	
+				sprintf(Msg, "SDRAngel Connection lost for Port %s\r\n", PORT->IOBASE);
+				WritetoConsole(Msg);
+
+				PORT->CONNECTED = FALSE;
+				PORT->Alerted = FALSE;
+				PORT->hDevice = 0;				// simplifies check code
+
+				closesocket(PORT->remoteSock);
+				PORT->remoteSock = 0;
+				return;
+			}
+			continue;
+		}
+		else
+		{
+		}
+	}
+	sprintf(Msg, "SDRAngel Thread Terminated Port %s\r\n", PORT->IOBASE);
+	WritetoConsole(Msg);
+}
+
+/*
+# 10489630000
+
+CURL_DATA='{
+    "deviceHwType": "RTLSDR",
+    "direction": 0,
+    "rtlSdrSettings": {
+       "centerFrequency": "'$1'"
+     }
+
+}';
+
+
+curl -X PATCH "http://127.0.0.1:8091/sdrangel/deviceset/0/device/settings" \
+     -H  "accept: application/json" \
+     -H  "Content-Type: application/json" \
+     -d "$CURL_DATA"
 
 
 
 
 
+
+
+
+
+*/
+
+
+VOID SDRANGELPoll(struct RIGPORTINFO * PORT)
+{
+	UCHAR * Poll = PORT->TXBuffer;
+
+	// SDRAngel can have muliple rigs but we only need to poll once to get info for all rigs so just use first entry
+
+	struct RIGINFO * RIG = &PORT->Rigs[0];
+	int Len, i;
+	char ReqBuf[256];
+	char SendBuff[256];
+	//char * SDRANGEL_GETheader = "GET /sdrangel/deviceset/%d/device/settings "
+	//			   "HTTP/1.1\nHost: %s\nConnection: keep-alive\n\r\n";
+
+	char * SDRANGEL_GETheader = "GET /sdrangel/devicesets "
+				   "HTTP/1.1\nHost: %s\nConnection: keep-alive\n\r\n";
+
+
+	if (RIG->ScanStopped == 0)
+		if (RIG->ScanCounter)
+			RIG->ScanCounter--;
+
+	if (PORT->Timeout)
+	{
+		PORT->Timeout--;
+
+		if (PORT->Timeout)			// Still waiting
+			return;
+
+		// Loop through all Rigs
+
+		for (i = 0; i <	PORT->ConfiguredRigs; i++)
+		{
+			RIG = &PORT->Rigs[i];
+
+			SetWindowText(RIG->hFREQ, "------------------");
+			SetWindowText(RIG->hMODE, "----------");
+			strcpy(RIG->WEB_FREQ, "-----------");;
+			strcpy(RIG->WEB_MODE, "------");
+	
+			RIG->RIGOK = FALSE;
+		}
+		return;
+	}
+
+	// Send Data if avail, else send poll
+
+	if (RIG->NumberofBands && RIG->RIGOK && (RIG->ScanStopped == 0))
+	{
+		if (RIG->ScanCounter <= 0)
+		{
+			//	Send Next Freq
+
+			if (GetPermissionToChange(PORT, RIG))
+			{
+				char cmd[80];
+				double freq;
+
+				if (RIG->RIG_DEBUG)
+					Debugprintf("BPQ32 Change Freq to %9.4f", PORT->FreqPtr->Freq);
+
+				_gcvt(PORT->FreqPtr->Freq / 1000000.0, 9, RIG->Valchar); // For MH
+
+				// Send the Set Freq here, send set mode when we get a response
+
+				memcpy(&PORT->ScanEntry, PORT->FreqPtr, sizeof(struct ScanEntry));
+
+//TODO
+				sprintf(cmd, "%.0f", PORT->FreqPtr->Freq);
+				SDRANGELSendCommand(PORT, "SETFREQ", cmd);
+
+
+				PORT->CmdSent = 1;
+				PORT->Retries = 0;
+				PORT->Timeout = 10;
+				PORT->AutoPoll = TRUE;
+
+				// There isn't a response to a set command, so clear Scan Lock here
+				ReleasePermission(RIG);			// Release Perrmission
+				return;
+			}
+		}
+	}
+
+	if (RIG->PollCounter)
+	{
+		RIG->PollCounter--;
+		if (RIG->PollCounter > 1)
+			return;
+	}
+
+	if (RIG->RIGOK && (RIG->ScanStopped == 0) && RIG->NumberofBands)
+		return;						// no point in reading freq if we are about to change it
+
+	RIG->PollCounter = 40;	
+
+	// Read Frequency
+//TODO
+
+
+//	Len = sprintf(SendBuff, SDRANGEL_GETheader, 0, &PORT->remoteDest );  // devicenum, host:port
+	Len = sprintf(SendBuff, SDRANGEL_GETheader, &PORT->remoteDest );  // devicenum, host:port
+
+	if (PORT->CONNECTED)
+	{
+		if (send(PORT->remoteSock, SendBuff, Len, 0) != Len)
+		{
+			if (PORT->remoteSock)
+				closesocket(PORT->remoteSock);
+
+			PORT->remoteSock = 0;
+			PORT->CONNECTED = FALSE;
+			PORT->hDevice = 0;
+			return;
+		}
+	}
+
+	PORT->Timeout = 10;
+	PORT->CmdSent = 0;
+
+	PORT->AutoPoll = TRUE;
+
+	return;
+}
+
+VOID SDRANGELSendCommand(struct RIGPORTINFO * PORT, char * Command, char * Value)
+{
+	int Len, ret;
+	char ReqBuf[512];
+	char SendBuff[512];
+	char ValueString[256] ="";
+	char * SDRANGEL_PATCHheader = "PATCH /sdrangel/deviceset/%d/device/settings "
+ 				     "HTTP/1.1\nHost: %s\n"
+				     "accept: application/json\n"
+				     "Content-Type: application/json\n"
+				     "Connection: keep-alive\n"
+				     "Content-length: %d\r\n"
+				     "\r\n%s";
+
+	if (!PORT->CONNECTED)
+		return;
+
+	sprintf(ValueString, SDRANGEL_FREQ_DATA, "RTLSDR", Value);
+
+	Len = sprintf(SendBuff, SDRANGEL_PATCHheader, 0, &PORT->remoteDest, strlen(ValueString), ValueString);
+
+	ret = send(PORT->remoteSock, SendBuff, Len, 0);
+	
+	if (ret != Len)
+	{
+		if (PORT->remoteSock)
+			closesocket(PORT->remoteSock);
+
+		PORT->remoteSock = 0;
+		PORT->CONNECTED = FALSE;
+		PORT->hDevice = 0;
+	}
+
+	return;
+}
+
+
+void SDRANGELProcessMessage(struct RIGPORTINFO * PORT)
+{
+	// Called from Background thread
+
+	int InputLen = recv(PORT->remoteSock, &PORT->RXBuffer[PORT->RXLen], 8192 - PORT->RXLen, 0);
+
+	if (InputLen == 0 || InputLen == SOCKET_ERROR)
+	{
+		if (PORT->remoteSock)
+			closesocket(PORT->remoteSock);
+
+		PORT->remoteSock = 0;
+
+		PORT->CONNECTED = FALSE;
+		PORT->hDevice = 0;
+		return;
+	}
+
+	PORT->RXLen += InputLen;
+	ProcessSDRANGELFrame(PORT);
+}
+
+
+
+// ---- G7TAJ ----

@@ -1120,7 +1120,15 @@
 
 //  6.0.25.1  ?? 
 
-//	Aff FBB reject.sys style filters (3)
+//	Add FBB reject.sys style filters (3)
+//	Improve Webmail on 64 bit builds
+//	Fix setting status '$' on Bulls sent via WebMail (22)
+//	Implement New Message and Message Read Events (23)
+//	Start adding json api (25)
+//	Fix reading nested directories when loading Standard Templates and other template bugs (25)
+//	Add TO and AT to "Message has nowhere to go" message (28)
+//	Add My Sent and My Received filter options to Webmail (30)
+//	Add Send P to multiple BBS's when routing on HR (30)
 
 #include "bpqmail.h"
 #include "winstdint.h"

@@ -115,7 +115,7 @@ VOID NETROMMSG(struct _LINKTABLE * LINK, L3MESSAGEBUFFER * L3MSG)
 	{
 		// INP3
 
-		ProcessINP3RIF(LINK->NEIGHBOUR, &L3MSG->L3SRCE[1], L3MSG->LENGTH - 9, L3MSG->Port);
+		ProcessINP3RIF(LINK->NEIGHBOUR, &L3MSG->L3SRCE[1], L3MSG->LENGTH - (MSGHDDRLEN + 2), L3MSG->Port);  // = 2 = PID + FF Flag
 		ReleaseBuffer(L3MSG);
 		return;
 	}
@@ -1297,13 +1297,10 @@ VOID CONNECTREQUEST(struct _LINKTABLE * LINK, L3MESSAGEBUFFER * L3MSG, UINT Appl
 	char BPQPARAMS[10];				// Extended Connect Params from BPQ Node
 	int CONERROR;
 	int Index;
-	char xxx[16] = "";
 
 	memcpy(BPQPARAMS, &L4T1, 2);	// SET DEFAULT T1 IN CASE NOT FROM ANOTHER BPQ NODE
 
 	BPQPARAMS[2] = 0;				// 'SPY' NOT SET	
-
-	ConvFromAX25(&L3MSG->L4DATA[1], xxx);
 
 	if (CheckExcludeList(&L3MSG->L4DATA[1]) == 0)
 	{

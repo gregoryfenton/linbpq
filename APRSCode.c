@@ -103,6 +103,7 @@ void SaveAPRSMessage(struct APRSMESSAGE * ptr);
 void ClearSavedMessages();
 void GetSavedAPRSMessages();
 static VOID GPSDConnect(void * unused);
+int CanPortDigi(int Port);
 
 extern int SemHeldByAPI;
 extern int APRSMONDECODE();
@@ -664,9 +665,10 @@ Dll BOOL APIENTRY Init_APRS()
 	memset(&CrossPortMap[0][0], 0, sizeof(CrossPortMap));
 	memset(&APRSBridgeMap[0][0], 0, sizeof(APRSBridgeMap));
 
-	for (i = 1; i <= 32; i++)
+	for (i = 1; i <= MaxBPQPortNo; i++)
 	{
-		CrossPortMap[i][i] = TRUE;			// Set Defaults - Same Port
+		if (CanPortDigi(i))
+			CrossPortMap[i][i] = TRUE;		// Set Defaults - Same Port
 		CrossPortMap[i][0] = TRUE;			// and APRS-IS
 	}
 
@@ -1579,9 +1581,9 @@ OK:
 
 		// Copy frame to a DIGIMessage Struct
 
-		memcpy(&Msg, monbuff, 21 + (7 * Digis));		// Header, Dest, Source, Addresses and Digis
+		memcpy(&Msg, monbuff, MSGHDDRLEN + 14 + (7 * Digis));		// Header, Dest, Source, Addresses and Digis
 
-		len = Msg.LENGTH - 21 - (7 * Digis);			// Payload Length (including CTL and PID
+		len = Msg.LENGTH - (MSGHDDRLEN + 14) - (7 * Digis);			// Payload Length (including CTL and PID
 
 		memcpy(&Msg.CTL, &AdjBuff->CTL, len);
 
@@ -1945,7 +1947,7 @@ static int APRSProcessLine(char * buf)
 		{
 			SendTo = atoi(ptr);				// this gives zero for IS
 	
-			if (SendTo > 32)
+			if (SendTo > MaxBPQPortNo)
 				return FALSE;
 
 			Object->PortMap[SendTo] = TRUE;	
@@ -2175,6 +2177,12 @@ static int APRSProcessLine(char * buf)
 		if (GetPortTableEntryFromPortNum(Port) == NULL)
 			return FALSE;
 
+		// Check that port can digi (SCS Pactor can't set digi'd bit in calls)
+
+		if (CanPortDigi(Port) == 0)
+			return FALSE;
+
+
 		CrossPortMap[Port][Port] = FALSE;	// Cancel Default mapping
 		CrossPortMap[Port][0] = FALSE;		// Cancel Default APRSIS
 
@@ -2218,7 +2226,7 @@ static int APRSProcessLine(char * buf)
 		{
 			DigiTo = atoi(ptr);				// this gives zero for IS
 	
-			if (DigiTo > 32)
+			if (DigiTo > MaxBPQPortNo)
 				return FALSE;
 
 			APRSBridgeMap[Port][DigiTo] = TRUE;	
@@ -2544,6 +2552,8 @@ VOID SendAPRSMessageEx(char * Message, int toPort, char * FromCall, int Gated)
 			else
 				continue;
 
+			Msg.DEST[6] |= 0x80;			// set Command Bit
+
 			ConvToAX25(FromCall, Msg.ORIGIN);
 			Msg.PID = 0xf0;
 			Msg.CTL = 3;
@@ -2571,6 +2581,8 @@ VOID SendAPRSMessageEx(char * Message, int toPort, char * FromCall, int Gated)
 		memcpy(Msg.DEST, &BeaconHeader[toPort][0][0],  10 * 7);
 	else
 		return;
+
+	Msg.DEST[6] |= 0x80;			// set Command Bit
 
 	ConvToAX25(FromCall, Msg.ORIGIN);
 	Msg.PID = 0xf0;
@@ -2748,7 +2760,8 @@ void SendBeaconThread(void * Param)
 		Debugprintf("Sending APRS Beacon to port %d", toPort);
 
 		memcpy(Msg.DEST, &BeaconHeader[toPort][0][0], 10 * 7);		// Clear unused digis
-		
+		Msg.DEST[6] |= 0x80;			// set Command Bit
+
 		GetSemaphore(&Semaphore, 12);
 		Send_AX_Datagram(&Msg, Len + 2, toPort);
 		FreeSemaphore(&Semaphore);
@@ -2772,6 +2785,8 @@ void SendBeaconThread(void * Param)
 			Msg.CTL = 3;
 
 			memcpy(Msg.DEST, &BeaconHeader[Port][0][0], 10 * 7);
+			Msg.DEST[6] |= 0x80;			// set Command Bit
+
 			GetSemaphore(&Semaphore, 12);
 			Send_AX_Datagram(&Msg, Len + 2, Port);
 			FreeSemaphore(&Semaphore);
@@ -2807,6 +2822,8 @@ VOID SendObject(struct OBJECT * Object)
 			Msg.CTL = 3;
 			Len = sprintf(Msg.L2DATA, "%s", Object->Message);
 			memcpy(Msg.DEST, &Object->Path[0][0],  Object->PathLen + 1);
+			Msg.DEST[6] |= 0x80;			// set Command Bit
+
 			Send_AX_Datagram(&Msg, Len + 2, Port);
 		}
 	}
@@ -2873,6 +2890,8 @@ VOID SendIStatus()
 			if (BeaconHddrLen[Port])		// Only send to ports with a DEST defined
 			{
 				memcpy(Msg.DEST, &BeaconHeader[Port][0][0], 10 * 7);
+				Msg.DEST[6] |= 0x80;			// set Command Bit
+
 				Send_AX_Datagram(&Msg, Len + 2, Port);
 			}
 		}
@@ -5238,6 +5257,7 @@ int DecodeAPRSPayload(char * Payload, struct STATIONRECORD * Station)
 			DecodeLocationString(Payload + 18, Object);
 		
 		Object->TimeLastUpdated = time(NULL);
+		Object->LastPort = Station->LastPort;
 		Station->Object = Object;
 		return 0;
 
@@ -8168,6 +8188,8 @@ VOID APRSCMD(TRANSPORTENTRY * Session, char * Bufferptr, char * CmdTail, CMDX * 
 			else
 				Bufferptr = Cmdprintf(Session, Bufferptr, "but not connected\r");
 		}
+
+		SendCommandReply(Session, REPLYBUFFER, (int)(Bufferptr - (char *)REPLYBUFFER));
 		return;
 	}
 

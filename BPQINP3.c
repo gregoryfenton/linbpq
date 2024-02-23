@@ -35,6 +35,9 @@ along with LinBPQ/BPQ32.  If not, see http://www.gnu.org/licenses
 #include <fcntl.h>					 
 //#include "vmm.h"
 
+uint64_t timeLoadedMS = 0;
+
+
 static VOID SendNetFrame(struct ROUTE * Route, struct _L3MESSAGEBUFFER * Frame)
 {
 	// INP3 should only ever send over an active link, so just queue the message
@@ -320,7 +323,7 @@ VOID ProcessRTTReply(struct ROUTE * Route, struct _L3MESSAGEBUFFER * Buff)
 	Route->Timeout = 0;			// Got Response
 	
 	sscanf(&Buff->L4DATA[6], "%d", &OrigTime);
-	RTT = GetTickCount() - OrigTime;
+	RTT = (GetTickCount() - timeLoadedMS) - OrigTime;
 
 	if (RTT > 60000)
 		return;					// Ignore if more than 60 secs
@@ -355,9 +358,7 @@ VOID ProcessINP3RIF(struct ROUTE * Route, UCHAR * ptr1, int msglen, int Port)
 
 	// Update Timestamp on Route
 
-	time((time_t *)&Stamp);
-
-	Stamp = Stamp % 86400;			// Secs into day
+	Stamp = time(NULL) % 86400;		// Secs into day
 	HH = Stamp / 3600;
 
 	Stamp -= HH * 3600;
@@ -367,6 +368,12 @@ VOID ProcessINP3RIF(struct ROUTE * Route, UCHAR * ptr1, int msglen, int Port)
 
 	while (msglen > 0)
 	{
+		if (msglen < 10)
+		{
+			Debugprintf("Corrupt INP3 Message");
+			return;
+		}
+
 		memset(alias, ' ', 6);	
 		memcpy(axcall, ptr1, 7);
 
@@ -378,6 +385,11 @@ VOID ProcessINP3RIF(struct ROUTE * Route, UCHAR * ptr1, int msglen, int Port)
 		hops = *ptr1++;
 		rtt = (*ptr1++ << 8);
 		rtt += *ptr1++;
+
+		// rtt is value from remote node. Add our RTT to that node and update hops
+
+		rtt += Route->SRTT;
+		hops++;
 
 		msglen -= 10;
 
@@ -766,7 +778,7 @@ VOID SendRTTMsg(struct ROUTE * Route)
 	Msg->L4FLAGS = L4INFO;
 
 
-	sprintf(Stamp, "%10d %10d %10d %10d ", GetTickCount(), Route->SRTT/10, Route->RTT/10, 0);
+	sprintf(Stamp, "%10llu %10d %10d %10d ", (GetTickCount() - timeLoadedMS), Route->SRTT/10, Route->RTT/10, 0);
 	memcpy(RTTMsg.TXTIME, Stamp, 44);
 
 	memcpy(Msg->L4DATA, &RTTMsg, 236);

@@ -38,6 +38,7 @@ extern char LTATString[2048];
 //static UCHAR BPQDirectory[260];
 
 extern ConnectionInfo Connections[];
+
 extern int NumberofStreams;
 extern time_t MaintClock;						// Time to run housekeeping
 
@@ -49,6 +50,7 @@ extern int MaxChatStreams;
 extern char Position[81];
 extern char PopupText[251];
 extern int PopupMode;
+extern int reportMailEvents;
 
 #define MaxCMS	10				// Numbr of addresses we can keep - currently 4 are used.
 
@@ -114,6 +116,7 @@ int SendWebMailHeader(char * Reply, char * Key, struct HTTPConnectionInfo * Sess
 struct UserInfo * FindBBS(char * Name);
 void ReleaseWebMailStruct(WebMailInfo * WebMail);
 VOID TidyWelcomeMsg(char ** pPrompt);
+int MailAPIProcessHTTPMessage(char * response, char * Method, char * URL, char * request, BOOL LOCAL, char * Param);
 
 char UNC[] = "";
 char CHKD[] = "checked=checked ";
@@ -398,7 +401,7 @@ int SendHeader(char * Reply, char * Key)
 }
 
 
-void ConvertTitletoUTF8(char * Title, char * UTF8Title)
+void ConvertTitletoUTF8(WebMailInfo * WebMail, char * Title, char * UTF8Title, int Len)
 {
 	if (WebIsUTF8(Title, (int)strlen(Title)) == FALSE)
 	{
@@ -414,15 +417,26 @@ void ConvertTitletoUTF8(char * Title, char * UTF8Title)
 		wlen = MultiByteToWideChar(CP_ACP, 0, Title, len, BufferW, origlen * 2); 
 		len = WideCharToMultiByte(CP_UTF8, 0, BufferW, wlen, UTF8Title, origlen * 2, NULL, NULL); 
 #else
-		int left = 2 * strlen(Title);
-		int len = origlen;
-		iconv_t * icu = NULL;
-				
-		if (icu == NULL)
-			icu = iconv_open("UTF-8", "CP1252");
+		size_t left = Len - 1;
+		size_t len = origlen;
+
+		iconv_t * icu = WebMail->iconv_toUTF8;
+
+		if (WebMail->iconv_toUTF8 == NULL)
+			icu = WebMail->iconv_toUTF8 = iconv_open("UTF-8//IGNORE", "CP1252");
+
+		if (icu == (iconv_t)-1)
+		{
+			strcpy(UTF8Title, Title);
+			WebMail->iconv_toUTF8 = NULL;
+			return;
+		}
+
+		char * orig = UTF8Title;
 
 		iconv(icu, NULL, NULL, NULL, NULL);		// Reset State Machine
 		iconv(icu, &Title, &len, (char ** __restrict__)&UTF8Title, &left);
+
 #endif
 	}
 	else
@@ -477,6 +491,13 @@ void ProcessMailHTTPMessage(struct HTTPConnectionInfo * Session, char * Method, 
 		GotFirstMessage = 1;
 		return;
 	}
+
+	if (_memicmp(URL, "/Mail/API/", 10) == 0)
+	{
+		*RLen = MailAPIProcessHTTPMessage(Reply, Method, URL, input, LOCAL, Context);
+		return;
+	}
+
 	
 	if (strcmp(Method, "POST") == 0)
 	{	
@@ -1622,6 +1643,7 @@ VOID ProcessConfUpdate(struct HTTPConnectionInfo * Session, char * MsgPtr, char 
 		UserCantKillT = !UserCantKillT;	// Reverse Logic
 		GetCheckBox(input, "FWDtoMe=", &ForwardToMe);
 		GetCheckBox(input, "OnlyKnown=", &OnlyKnown);
+		GetCheckBox(input, "Events=", &reportMailEvents);
 
 		GetParam(input, "POP3Port=", Temp);
 		POP3InPort = atoi(Temp);
@@ -2599,6 +2621,7 @@ VOID SendConfigPage(char * Reply, int * ReplyLen, char * Key)
 		(UserCantKillT) ? UNC : CHKD,		// Reverse logic
 		(ForwardToMe) ? CHKD  : UNC,
 		(OnlyKnown) ? CHKD  : UNC,
+		(reportMailEvents) ? CHKD  : UNC,
 		POP3InPort, SMTPInPort, NNTPInPort,
 		(RemoteEmail) ? CHKD  : UNC,
 		AMPRDomain,

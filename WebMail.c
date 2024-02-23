@@ -44,7 +44,7 @@ BOOL OkToKillMessage(BOOL SYSOP, char * Call, struct MsgInfo * Msg);
 int DisplayWebForm(struct HTTPConnectionInfo * Session, struct MsgInfo * Msg, char * FileName, char * XML, char * Reply, char * RawMessage, int RawLen);
 struct HTTPConnectionInfo * AllocateWebMailSession();
 VOID SaveNewMessage(struct HTTPConnectionInfo * Session, char * MsgPtr, char * Reply, int * RLen, char * Rest, int InputLen);
-void ConvertTitletoUTF8(char * Title, char * UTF8Title);
+void ConvertTitletoUTF8(WebMailInfo * WebMail, char * Title, char * UTF8Title, int Len);
 char *stristr (char *ch1, char *ch2);
 char * ReadTemplate(char * FormSet, char * DirName, char * FileName);
 VOID DoStandardTemplateSubsitutions(struct HTTPConnectionInfo * Session, char * txtFile);
@@ -76,6 +76,8 @@ VOID SendTemplateSelectScreen(struct HTTPConnectionInfo * Session, char *URLPara
 BOOL isAMPRMsg(char * Addr);
 char * doXMLTransparency(char * string);
 Dll BOOL APIENTRY APISendAPRSMessage(char * Text, char * ToCall);
+void SendMessageReadEvent(char * Call, struct MsgInfo * Msg);
+void SendNewMessageEvent(char * call, struct MsgInfo * Msg);
 
 extern char NodeTail[];
 extern char BBSName[10];
@@ -719,26 +721,27 @@ VOID ProcessFormDir(char * FormSet, char * DirName, struct HtmlFormDir *** xxx, 
 	{
         if (entry->d_type == DT_DIR)
 		{
-            if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
+			char Dir[MAX_PATH];
+
+			if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
                 continue;
 
-			Debugprintf("Recurse %s/%s/%s", FormSet, DirName, entry->d_name);
+			// Recurse in subdir
+
+			sprintf(Dir, "%s/%s", DirName, entry->d_name);
+
+			ProcessFormDir(FormSet, Dir, &FormDir->Dirs, &FormDir->DirCount);
 			continue;
-
 		}
-		// see if initial html
 
-//		if (stristr(entry->d_name, "initial.html"))
-		{
-			// Add to list
+		// Add to list
 
-			Form = zalloc(sizeof (struct HtmlForm));
+		Form = zalloc(sizeof (struct HtmlForm));
 
-			Form->FileName = _strdup(entry->d_name);
+		Form->FileName = _strdup(entry->d_name);
 
-			FormDir->Forms=realloc(FormDir->Forms, (FormDir->FormCount + 1) * sizeof(void *));
-			FormDir->Forms[FormDir->FormCount++] = Form;
-		}
+		FormDir->Forms=realloc(FormDir->Forms, (FormDir->FormCount + 1) * sizeof(void *));
+		FormDir->Forms[FormDir->FormCount++] = Form;
     }
     closedir(dir);
 #endif
@@ -808,22 +811,23 @@ int GetHTMLFormSet(char * FormSet)
 	if (!(dir = opendir(name)))
 	{
 		Debugprintf("cant open forms dir %s %d %d", name, errno, dir);
-        return 0;
 	}
-
-    while ((entry = readdir(dir)) != NULL)
+	else
 	{
-        if (entry->d_type == DT_DIR)
+		while ((entry = readdir(dir)) != NULL)
 		{
-            if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
-                continue;
+			if (entry->d_type == DT_DIR)
+			{
+				if (strcmp(entry->d_name, ".") == 0 || strcmp(entry->d_name, "..") == 0)
+					continue;
 
-			// Add to Directory List
+				// Add to Directory List
 
-			ProcessFormDir(FormSet, entry->d_name, &HtmlFormDirs, &FormDirCount);
-        }
-    }
-    closedir(dir);
+				ProcessFormDir(FormSet, entry->d_name, &HtmlFormDirs, &FormDirCount);
+			}
+		}
+		closedir(dir);
+	}
 #endif
 
 	// List for testing
@@ -906,7 +910,7 @@ int SendWebMailHeaderEx(char * Reply, char * Key, struct HTTPConnectionInfo * Se
 		
 		if (Msg && CheckUserMsg(Msg, User->Call, User->flags & F_SYSOP))
 		{
-			char UTF8Title[128];
+			char UTF8Title[4096];
 			char  * EncodedTitle;
 			
 			// List if it is the right type and in the page range we want
@@ -924,6 +928,22 @@ int SendWebMailHeaderEx(char * Reply, char * Key, struct HTTPConnectionInfo * Se
 					continue;
 			}
 
+			if (Session->WebMailMyTX)
+			{
+				// Only list if to or from me
+
+				if (strcmp(User->Call, Msg->from) != 0)
+					continue;
+			}
+
+			if (Session->WebMailMyRX)
+			{
+				// Only list if to or from me
+
+				if (strcmp(User->Call, Msg->to)!= 0)
+					continue;
+			}
+
 			if (Count++ < Session->WebMailSkip)
 				continue;
 
@@ -934,7 +954,8 @@ int SendWebMailHeaderEx(char * Reply, char * Key, struct HTTPConnectionInfo * Se
 
 			EncodedTitle = doXMLTransparency(Msg->title);
 
-			ConvertTitletoUTF8(EncodedTitle, UTF8Title);
+			memset(UTF8Title, 0, 4096);		// In case convert fails part way through
+			ConvertTitletoUTF8(Session->WebMail, EncodedTitle, UTF8Title, 4095);
 
 			free(EncodedTitle);
 			
@@ -954,7 +975,7 @@ int SendWebMailHeaderEx(char * Reply, char * Key, struct HTTPConnectionInfo * Se
 	if (WebMailTemplate == NULL)
 		WebMailTemplate = GetTemplateFromFile(6, "WebMailPage.txt");
 
-	return sprintf(Reply, WebMailTemplate, BBSName, User->Call, Key, Key, Key, Key, Key, Key, Key, Key, Messages);
+	return sprintf(Reply, WebMailTemplate, BBSName, User->Call, Key, Key, Key, Key, Key, Key, Key, Key, Key, Key, Messages);
 }
 
 int ViewWebMailMessage(struct HTTPConnectionInfo * Session, char * Reply, int Number, BOOL DisplayHTML)
@@ -971,7 +992,7 @@ int ViewWebMailMessage(struct HTTPConnectionInfo * Session, char * Reply, int Nu
 	int msgLen;
 
 	char FullTo[100];
-	char UTF8Title[128];
+	char UTF8Title[4096];
 	int Index;
 	char * crcrptr;
 	char DownLoad[256] = "";
@@ -1009,7 +1030,8 @@ int ViewWebMailMessage(struct HTTPConnectionInfo * Session, char * Reply, int Nu
 
 	// make sure title is UTF 8 encoded
 
-	ConvertTitletoUTF8(Msg->title, UTF8Title);
+	memset(UTF8Title, 0, 4096);		// In case convert fails part way through
+	ConvertTitletoUTF8(Session->WebMail, Msg->title, UTF8Title, 4095);
 
 	// if a B2 message diplay B2 Header instead of a locally generated one
 
@@ -1120,7 +1142,7 @@ int ViewWebMailMessage(struct HTTPConnectionInfo * Session, char * Reply, int Nu
 								Msg->status = 'Y';
 								Msg->datechanged=time(NULL);
 								SaveMessageDatabase();
-
+								SendMessageReadEvent(Session->Callsign, Msg);
 							}
 						}
 					}
@@ -1188,9 +1210,14 @@ int ViewWebMailMessage(struct HTTPConnectionInfo * Session, char * Reply, int Nu
 							Msg->status = 'Y';
 							Msg->datechanged=time(NULL);
 							SaveMessageDatabase();
+							SendMessageReadEvent(Session->Callsign, Msg);
 						}
 					}
 				}
+
+				if (DisplayHTML && stristr(Message, "</html>"))
+					DisplayStyle = "div";				// Use div so HTML and XML are interpreted
+
 				return sprintf(Reply, WebMailMsgTemplate, BBSName, User->Call, Msg->number, Msg->number, Key, Msg->number, Key, DownLoad, Key, Key, Key, DisplayStyle, Message, DisplayStyle);
 			}
 
@@ -1230,9 +1257,7 @@ int ViewWebMailMessage(struct HTTPConnectionInfo * Session, char * Reply, int Nu
 			size_t origlen = msgLen + 1;
 
 			UCHAR * BufferB = malloc(2 * origlen);
-
 #ifdef WIN32
-
 			WCHAR * BufferW = malloc(2 * origlen);
 			int wlen;
 			int len = (int)origlen;
@@ -1244,27 +1269,41 @@ int ViewWebMailMessage(struct HTTPConnectionInfo * Session, char * Reply, int Nu
 			Save = MsgBytes = BufferB;
 			free(BufferW);
 			msgLen = len - 1;		// exclude NULL
-
 #else
-			int left = 2 * msgLen;
-			int len = msgLen;
+			size_t left = 2 * msgLen;
+			size_t outbuflen = left;
+			size_t len = msgLen + 1;		// include null
+			int ret;
 			UCHAR * BufferBP = BufferB;
-			iconv_t * icu = NULL;
+			char * orig = MsgBytes;
+			MsgBytes[msgLen] = 0;
 
+			iconv_t * icu = Session->WebMail->iconv_toUTF8;
+				
 			if (icu == NULL)
-				icu = iconv_open("UTF-8", "CP1252");
+				icu = Session->WebMail->iconv_toUTF8 = iconv_open("UTF-8//IGNORE", "CP1252");
 
-			iconv(icu, NULL, NULL, NULL, NULL);		// Reset State Machine
-			iconv(icu, &MsgBytes, &len, (char ** __restrict__)&BufferBP, &left);
+			if (icu == (iconv_t) -1)
+			{
+				Session->WebMail->iconv_toUTF8 = NULL;
+				strcpy(BufferB, MsgBytes);
+			}
+			else
+			{
+				iconv(icu, NULL, NULL, NULL, NULL);		// Reset State Machine
+				ret = iconv(icu, &MsgBytes, &len, (char ** __restrict__)&BufferBP, &left);
+			}
+
+			// left is next location to write, so length written is outbuflen - left
+			// add a null in case iconv didn't complete comversion
+
+			BufferB[outbuflen - left] = 0;
 
 			free(Save);
 			Save = MsgBytes = BufferB;
 			msgLen = strlen(MsgBytes);
-
 #endif
-
 		}
-
 
 		//		ptr += sprintf(ptr, "%s", MsgBytes);
 
@@ -1285,6 +1324,7 @@ int ViewWebMailMessage(struct HTTPConnectionInfo * Session, char * Reply, int Nu
 					Msg->status = 'Y';
 					Msg->datechanged=time(NULL);
 					SaveMessageDatabase();
+					SendMessageReadEvent(Session->Callsign, Msg);
 				}
 			}
 		}
@@ -1294,11 +1334,8 @@ int ViewWebMailMessage(struct HTTPConnectionInfo * Session, char * Reply, int Nu
 		ptr += sprintf(ptr, "File for Message %d not found\r", Number);
 	}
 
-	if (DisplayHTML && stristr(Message, "html>"))
+	if (DisplayHTML && stristr(Message, "</html>"))
 		DisplayStyle = "div";				// Use div so HTML and XML are interpreted
-
-
-
 
 
 	return sprintf(Reply, WebMailMsgTemplate, BBSName, User->Call, Msg->number, Msg->number, Key, Msg->number, Key, DownLoad, Key, Key, Key, DisplayStyle, Message, DisplayStyle);
@@ -1406,6 +1443,11 @@ void FreeWebMailFields(WebMailInfo * WebMail)
 
 	SaveReply = WebMail->Reply;
 	SaveRlen = WebMail->RLen;
+
+#ifndef WIN32
+	if (WebMail->iconv_toUTF8)
+		iconv_close(WebMail->iconv_toUTF8);
+#endif
 
 	memset(WebMail, 0, sizeof(WebMailInfo));
 
@@ -1591,6 +1633,8 @@ void ProcessWebMailMessage(struct HTTPConnectionInfo * Session, char * Key, BOOL
 
 						Session->WebMailLastUsed = time(NULL);
 						Session->WebMailSkip = 0;
+						Session->WebMailMyTX = FALSE;
+						Session->WebMailMyRX = FALSE;
 						Session->WebMailMine = FALSE;
 
 						if (WebMailTemplate)
@@ -1733,6 +1777,8 @@ void ProcessWebMailMessage(struct HTTPConnectionInfo * Session, char * Key, BOOL
 
 		Session->WebMailSkip = 0;
 		Session->WebMailMine = FALSE;
+		Session->WebMailMyTX = FALSE;
+		Session->WebMailMyRX = FALSE;
 
 		*RLen = SendWebMailHeader(Reply, Session->Key, Session);
  		return;
@@ -1743,6 +1789,8 @@ void ProcessWebMailMessage(struct HTTPConnectionInfo * Session, char * Key, BOOL
 		Session->WebMailSkip = 0;
 		Session->WebMailTypes[0] = 0;
 		Session->WebMailMine = FALSE;
+		Session->WebMailMyTX = FALSE;
+		Session->WebMailMyRX = FALSE;
 
 		*RLen = SendWebMailHeader(Reply, Session->Key, Session);
  		return;
@@ -1753,6 +1801,8 @@ void ProcessWebMailMessage(struct HTTPConnectionInfo * Session, char * Key, BOOL
 		Session->WebMailSkip = 0;
 		strcpy(Session->WebMailTypes, "B");
 		Session->WebMailMine = FALSE;
+		Session->WebMailMyTX = FALSE;
+		Session->WebMailMyRX = FALSE;
 
 		*RLen = SendWebMailHeader(Reply, Session->Key, Session);
  		return;
@@ -1763,6 +1813,8 @@ void ProcessWebMailMessage(struct HTTPConnectionInfo * Session, char * Key, BOOL
 		Session->WebMailSkip = 0;
 		strcpy(Session->WebMailTypes, "P");
 		Session->WebMailMine = FALSE;
+		Session->WebMailMyTX = FALSE;
+		Session->WebMailMyRX = FALSE;
 
 		*RLen = SendWebMailHeader(Reply, Session->Key, Session);
  		return;
@@ -1773,6 +1825,8 @@ void ProcessWebMailMessage(struct HTTPConnectionInfo * Session, char * Key, BOOL
 		Session->WebMailSkip = 0;
 		strcpy(Session->WebMailTypes, "T");
 		Session->WebMailMine = FALSE;
+		Session->WebMailMyTX = FALSE;
+		Session->WebMailMyRX = FALSE;
 
 		*RLen = SendWebMailHeader(Reply, Session->Key, Session);
  		return;
@@ -1783,6 +1837,32 @@ void ProcessWebMailMessage(struct HTTPConnectionInfo * Session, char * Key, BOOL
 		Session->WebMailSkip = 0;
 		Session->WebMailTypes[0] = 0;
 		Session->WebMailMine = TRUE;
+		Session->WebMailMyTX = FALSE;
+		Session->WebMailMyRX = FALSE;
+		
+		*RLen = SendWebMailHeader(Reply, Session->Key, Session);
+ 		return;
+	}
+
+	if (_stricmp(NodeURL, "/WebMail/WMtoMe") == 0)
+	{
+		Session->WebMailSkip = 0;
+		Session->WebMailTypes[0] = 0;
+		Session->WebMailMine = FALSE;
+		Session->WebMailMyTX = FALSE;
+		Session->WebMailMyRX = TRUE;
+		
+		*RLen = SendWebMailHeader(Reply, Session->Key, Session);
+ 		return;
+	}
+
+	if (_stricmp(NodeURL, "/WebMail/WMfromMe") == 0)
+	{
+		Session->WebMailSkip = 0;
+		Session->WebMailTypes[0] = 0;
+		Session->WebMailMine = TRUE;
+		Session->WebMailMyTX = TRUE;
+		Session->WebMailMyRX = FALSE;
 		
 		*RLen = SendWebMailHeader(Reply, Session->Key, Session);
  		return;
@@ -1871,6 +1951,8 @@ void ProcessWebMailMessage(struct HTTPConnectionInfo * Session, char * Key, BOOL
 			"<td><a href=/WebMail/WMT?%s>NTS</a></td>\r\n"
 			"<td><a href=/WebMail/WMALL?%s>All Types</a></td>\r\n"
 			"<td><a href=/WebMail/WMMine?%s>Mine</a></td>\r\n"
+			"<td><a href=/WebMail/WMfromMe?%s>My Sent</a></td>\r\n"
+			"<td><a href=/WebMail/WMtoMe?%s>My Rxed</a></td>\r\n"
 			"<td><a href=/WebMail/WMAuto?%s>Auto Refresh</a></td>\r\n"
 			"<td><a href=\"#\" onclick=\"newmsg('%s'); return false;\">Send Message</a></td>\r\n"
 			"<td><a href=/WebMail/WMLogout?%s>Logout</a></td>\r\n"
@@ -1880,7 +1962,7 @@ void ProcessWebMailMessage(struct HTTPConnectionInfo * Session, char * Key, BOOL
 			"<div align=left id=main style=overflow:scroll;>Waiting for data...</div>\r\n"
 			"</body></html>\r\n";
 
-		sprintf(Page, WebSockPage, Key, Key ,BBSName, Session->User->Call, Key, Key, Key, Key, Key, Key, Key, Key);
+		sprintf(Page, WebSockPage, Key, Key ,BBSName, Session->User->Call, Key, Key, Key, Key, Key, Key, Key, Key, Key, Key);
 
 		*RLen = sprintf(Reply, "%s", Page);
 		return;
@@ -2073,9 +2155,24 @@ void ProcessWebMailMessage(struct HTTPConnectionInfo * Session, char * Key, BOOL
 						continue;
 				}
 
+				if (Session->WebMailMyTX)
+				{
+					// Only list if to or from me
+
+					if (strcmp(User->Call, Msg->from) != 0)
+						continue;
+				}
+
+				if (Session->WebMailMyRX)
+				{
+					// Only list if to or from me
+
+					if (strcmp(User->Call, Msg->to) != 0)
+						continue;
+				}
 				*RLen = ViewWebMailMessage(Session, Reply, m, TRUE);
 
- 				return;
+				return;
 			}
 		}
 
@@ -2097,10 +2194,10 @@ void ProcessWebMailMessage(struct HTTPConnectionInfo * Session, char * Key, BOOL
 		for (m = Session->WebMail->CurrentMessageIndex + 1; m <= LatestMsg; m++)
 		{
 			Msg = GetMsgFromNumber(m);
-	
+
 			if (Msg == 0 || Msg->type == 0 || Msg->status == 0)
 				continue;					// Protect against corrupt messages
-		
+
 			if (Msg && CheckUserMsg(Msg, User->Call, User->flags & F_SYSOP))
 			{			
 				// Display if it is the right type and in the page range we want
@@ -2118,9 +2215,24 @@ void ProcessWebMailMessage(struct HTTPConnectionInfo * Session, char * Key, BOOL
 						continue;
 				}
 
+				if (Session->WebMailMyTX)
+				{
+					// Only list if to or from me
+
+					if (strcmp(User->Call, Msg->from) != 0)
+						continue;
+				}
+
+				if (Session->WebMailMyRX)
+				{
+					// Only list if to or from me
+
+					if (strcmp(User->Call, Msg->to) != 0)
+						continue;
+				}
 				*RLen = ViewWebMailMessage(Session, Reply, m, TRUE);
 
- 				return;
+				return;
 			}
 		}
 
@@ -2753,10 +2865,18 @@ VOID SaveNewMessage(struct HTTPConnectionInfo * Session, char * MsgPtr, char * R
 
 		BuildNNTPList(Msg);				// Build NNTP Groups list
 
+		if (Msg->status != 'H' && Msg->type == 'B' && memcmp(Msg->fbbs, zeros, NBMASK) != 0)
+			Msg->status = '$';				// Has forwarding
+
+
 		if (EnableUI)
 			SendMsgUI(Msg);	
 
 		user = LookupCall(Msg->to);
+
+		// If Event Notifications enabled report a new message event
+
+		SendNewMessageEvent(user->Call, Msg);
 
 		if (user && (user->flags & F_APRSMFOR))
 		{
@@ -2815,12 +2935,25 @@ char * GetHTMLViewerTemplate(char * FN)
 		{
 			for (l = 0; l < Dir->DirCount; l++)
 			{
-				for (k = 0; k < Dir->Dirs[l]->FormCount; k++)
+				struct HtmlFormDir * SDir = Dir->Dirs[l];
+
+				if (SDir->DirCount)
 				{
-					if (strcmp(FN, Dir->Dirs[l]->Forms[k]->FileName) == 0)
+					struct HtmlFormDir * SSDir = SDir->Dirs[0];
+					int x = 1;
+				}
+
+				for (k = 0; k < SDir->FormCount; k++)
+				{
+					if (_stricmp(FN, SDir->Forms[k]->FileName) == 0)
 					{
-						return CheckFile(Dir, Dir->Dirs[l]->Forms[k]->FileName);
+						return CheckFile(SDir, SDir->Forms[k]->FileName);
 					}
+				}
+				if (SDir->DirCount)
+				{
+					struct HtmlFormDir * SSDir = SDir->Dirs[0];
+					int x = 1;
 				}
 			}
 		}
@@ -3201,7 +3334,7 @@ BOOL ParseXML(WebMailInfo * WebMail, char * XMLOrig)
 
 		*ptr2++ = 0;
 
-		ptr3 = strchr(ptr2, '<');	// end of value string
+		ptr3 = strstr(ptr2, "</");	// end of value string
 		if (ptr3 == NULL)
 			goto quit;
 
@@ -3213,6 +3346,14 @@ BOOL ParseXML(WebMailInfo * WebMail, char * XMLOrig)
 		XMLKeys++;
 
 		ptr1 = strchr(ptr3, '<');
+
+		if (_memicmp(ptr1, "</", 2) == 0)
+		{
+			// end of a parameter block. Find start of next block
+
+			ptr1 = strchr(++ptr1, '<');
+			ptr1 = strchr(++ptr1, '<');		// Skip start of next block
+		}
 	}
 
 
@@ -3677,6 +3818,9 @@ VOID WriteOneRecipient(struct MsgInfo * Msg, WebMailInfo * WebMail, int MsgLen, 
 	Msg->length = (int)WriteLen;
 
 	MatchMessagetoBBSList(Msg, 0);
+
+	if (Msg->status != 'H' && Msg->type == 'B' && memcmp(Msg->fbbs, zeros, NBMASK) != 0)
+		Msg->status = '$';				// Has forwarding
 
 	BuildNNTPList(Msg);				// Build NNTP Groups list
 }
@@ -4257,6 +4401,9 @@ VOID BuildMessageFromHTMLInput(struct HTTPConnectionInfo * Session, char * Reply
 	WebMail->Body = NULL;
 
 	MatchMessagetoBBSList(Msg, 0);
+
+	if (Msg->status != 'H' && Msg->type == 'B' && memcmp(Msg->fbbs, zeros, NBMASK) != 0)
+		Msg->status = '$';				// Has forwarding
 
 	BuildNNTPList(Msg);				// Build NNTP Groups list
 
@@ -5320,6 +5467,8 @@ char * CheckFile(struct HtmlFormDir * Dir, char * FN)
 
 #endif
 
+	printf("%s\n", MsgFile);
+
 	if (stat(MsgFile, &STAT) != -1)
 	{
 		hFile = fopen(MsgFile, "rb");
@@ -5335,6 +5484,8 @@ char * CheckFile(struct HtmlFormDir * Dir, char * FN)
 		ReadLen = (int)fread(MsgBytes, 1, FileSize, hFile);
 		MsgBytes[FileSize] = 0;
 		fclose(hFile);
+
+		printf("%d %s\n", strlen(MsgBytes), MsgBytes);
 
 		return MsgBytes;
 	}
@@ -6098,7 +6249,7 @@ int ProcessWebmailWebSock(char * MsgPtr, char * OutBuffer)
 		
 		if (Msg && CheckUserMsg(Msg, User->Call, User->flags & F_SYSOP))
 		{
-			char UTF8Title[128];
+			char UTF8Title[4096];
 			char  * EncodedTitle;
 			
 			// List if it is the right type and in the page range we want
@@ -6116,6 +6267,21 @@ int ProcessWebmailWebSock(char * MsgPtr, char * OutBuffer)
 					continue;
 			}
 
+			if (Session->WebMailMyTX)
+			{
+				// Only list if to or from me
+
+				if (strcmp(User->Call, Msg->from) != 0)
+					continue;
+			}
+
+			if (Session->WebMailMyRX)
+			{
+				// Only list if to or from me
+
+				if (strcmp(User->Call, Msg->to) != 0)
+					continue;
+			}
 			if (Count++ < Session->WebMailSkip)
 				continue;
 
@@ -6126,10 +6292,11 @@ int ProcessWebmailWebSock(char * MsgPtr, char * OutBuffer)
 
 			EncodedTitle = doXMLTransparency(Msg->title);
 
-			ConvertTitletoUTF8(EncodedTitle, UTF8Title);
+			memset(UTF8Title, 0, 4096);		// In case convert fails part way through
+			ConvertTitletoUTF8(Session->WebMail, EncodedTitle, UTF8Title, 4095);
 
 			free(EncodedTitle);
-			
+
 			ptr += sprintf(ptr, "<a href=/WebMail/WM?%s&%d>%6d</a> %s %c%c %5d %-8s%-8s%-8s%s\r\n",
 				Key, Msg->number, Msg->number,
 				FormatDateAndTime((time_t)Msg->datecreated, TRUE), Msg->type,

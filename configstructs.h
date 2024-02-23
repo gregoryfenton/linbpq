@@ -73,10 +73,11 @@ struct PORTCONFIG
 	unsigned int PERMITTEDAPPLS;	// Appls allowed on this port
 	int HavePermittedAppls;			// Indicated PERMITTEDAPPLS uses
 	int Hide;				// Don't show on Ports display or AGW Connect Menu
-	long long txOffset;		// Transverter tx offset 
-	long long rxOffset;		// Transverter rx offset ppa
+//	long long txOffset;		// Transverter tx offset 
+//	long long rxOffset;		// Transverter rx offset ppa
 	int SmartID;
 	unsigned char * KissParams;
+	int SendtoM0LTEMap;
 };
 
 struct ROUTECONFIG
@@ -149,6 +150,7 @@ struct CONFIGTABLE
 	UCHAR C_EVENTS;
 	UCHAR C_LogAllConnects;	
 	UCHAR C_SaveAPRSMsgs;
+	UCHAR C_M0LTEMap;
 	UCHAR C_VERSION;			// CONFIG PROG VERSION
 //	Reuse C_APPLICATIONS - no longer used
 	char C_NETROMCALL[10];
@@ -156,7 +158,7 @@ struct CONFIGTABLE
 	char C_IDMSG[512];
 	char C_CTEXT[512];
 	char C_INFOMSG[2048];
-	UCHAR CfgBridgeMap[MaxBPQPortNo][MaxBPQPortNo];
+	UCHAR CfgBridgeMap[MaxBPQPortNo + 1][MaxBPQPortNo + 1];
 	struct ROUTECONFIG C_ROUTE[MaxLockedRoutes];
 	struct APPLCONFIG C_APPL[NumberofAppls];
 	struct PORTCONFIG C_PORT[MaxBPQPortNo + 4];

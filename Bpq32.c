@@ -1086,7 +1086,7 @@ along with LinBPQ/BPQ32.  If not, see http://www.gnu.org/licenses
 //	Add ? and * wildcards to NODES command (74)
 //  Add Port RADIO config parameter (74)
 
-//  Version 6.0.24.1 August 2023
+//  Version 6.0.24.1 August 2024
 
 //	Apply NODES command wildcard to alias as well a call (2)
 //	Add STOPPORT/STARTPORT to VARA Driver (2)
@@ -1185,6 +1185,30 @@ along with LinBPQ/BPQ32.  If not, see http://www.gnu.org/licenses
 //	Fix 64 bit compatibility problems in SCSTracker and UZ7HO drivers
 //	Add Chat PACLEN config (5)
 //	Fix NC to Application Call (6)
+//	Fix INP3 L3RTT messages on Linux and correct RTT calculation (9)
+//	Get Beacon config from config file on Windows (9)
+//	fix processing DED TNC Emulator M command with space between M and params (10)
+//	Fix sending UI frames on SCSPACTOR (11)
+//	Dont allow ports that can't set digi'ed bit in callsigns to digipeat. (11)
+//	Add SDRAngel rig control (11)
+//	Add option to specify config and data directories on linbpq (12)
+//	Allow zero resptime (send RR immediately) (13)
+//	Make sure CMD bit is set on UI frames
+//	Add setting Modem Flags in QtSM AGW mode
+//	If FT847 om PTC Port send a "Cat On" command (17)
+//	Fix some 63 port bugs in RigCOntrol (17)
+//	Fix 63 port bug in Bridging (18)
+//	Add FTDX10 Rigcontrol (19)
+//	Fix 64 bit bug in displaying INP3 Messages (20)
+//	Improve restart of WinRPR TNC on remote host (21)
+//	Fix some Rigcontrol issues with empty timebands (22)
+//	Fix 64 bit bug in processing INP3 Messages (22)
+//	First pass at api (24)
+//	Send OK in response to Rigcontrol CMD (24)
+//	Disable CTS check in WriteComBlock (26) 
+//	Improvments to reporting to M0LTE Map (26)
+//	IPGateway fix from github user isavitsky (27)
+//  Fix possible crash in SCSPactor PTCPORT code (29)
 
 #define CKernel
 
@@ -1410,6 +1434,10 @@ extern char MAPCOMMENT[];		// Locator for Reporting - may be Maidenhead or LAT:L
 extern char LOC[7];				// Maidenhead Locator for Reporting
 extern char ReportDest[7];
 
+extern UCHAR ConfigDirectory[260];
+
+extern uint64_t timeLoadedMS;
+
 VOID __cdecl Debugprintf(const char * format, ...);
 VOID __cdecl Consoleprintf(const char * format, ...);
 
@@ -1589,7 +1617,7 @@ char PopupText[30][100] = {""};
 // Next 3 should be uninitialised so they are local to each process
 
 UCHAR	MCOM;
-UCHAR	MTX;
+UCHAR	MTX;						// Top bit indicates use local time
 uint64_t MMASK;
 UCHAR	MUIONLY;
 
@@ -2043,7 +2071,7 @@ VOID TimerProcX()
 
 			GetWindowRect(FrameWnd, &FRect);
 
-			SaveWindowPos(64);		// Rigcontrol
+			SaveWindowPos(70);		// Rigcontrol
 
 			for (i=0;i<NUMBEROFPORTS;i++)
 			{
@@ -2159,7 +2187,7 @@ VOID TimerProcX()
 		if(TimerInst == GetCurrentProcessId())
 		{
 			RigReconfigFlag = FALSE;
-			CloseDriverWindow(40);
+			CloseDriverWindow(70);
 			Rig_Close();
 			Sleep(6000);		// Allow any CATPTT, HAMLIB and FLRIG threads to close
 			RigActive = Rig_Init();
@@ -2292,6 +2320,9 @@ FirstInit()
 		GetModuleFileNameExPtr = (FARPROCX)GetProcAddress(ExtDriver,"GetModuleFileNameExA");
 		EnumProcessesPtr = (FARPROCX)GetProcAddress(ExtDriver,"EnumProcesses");
 	}
+
+	timeLoadedMS = GetTickCount();
+	
 	INITIALISEPORTS();
 
 	OpenReportingSockets();
@@ -3270,6 +3301,8 @@ if (_winver < 0x0600)
 
 		RegCloseKey(hKey);
 	}
+
+	strcpy(ConfigDirectory, BPQDirectory);
 
 	if (LogDirectory[0] == 0)
 		strcpy(LogDirectory, BPQDirectory);
@@ -6455,7 +6488,7 @@ VOID SaveBPQ32Windows()
 		PORTVEC=(PEXTPORTDATA)PORTVEC->PORTCONTROL.PORTPOINTER;		
 	}
 
-	SaveWindowPos(40);		// Rigcontrol
+	SaveWindowPos(70);		// Rigcontrol
 
 
 	if (hIPResWnd)

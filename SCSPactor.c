@@ -122,6 +122,7 @@ VOID WritetoTrace(struct TNCINFO * TNC, char * Msg, int Len);
 void SCSTryToSendDATA(struct TNCINFO * TNC, int Stream);
 VOID UpdateMHwithDigis(struct TNCINFO * TNC, UCHAR * Call, char Mode, char Direction);
 int standardParams(struct TNCINFO * TNC, char * buf);
+int SendPTCRadioCommand(struct TNCINFO * TNC, char * Block, int Length);
 
 #define	FEND	0xC0	// KISS CONTROL CODES 
 #define	FESC	0xDB
@@ -1770,9 +1771,6 @@ VOID SCSPoll(int Port)
 
 		Buffer[datalen] = 0;
 
-		// Buffer has an ax.25 header, which we need to pick out and set as channel 0 Connect address
-		// before sending the beacon
-
 		// If a Dragon with KISS over Hostmade we can just send it
 
 		if (TNC->DragonKISS)
@@ -1817,6 +1815,11 @@ VOID SCSPoll(int Port)
 			return;
 		}
 
+		// Not dragon KISS
+
+		// Buffer has an ax.25 header, which we need to pick out and set as channel 0 Connect address
+		// before sending the beacon
+
 		// We also need to set Chan 0 Mycall so digi'ing can work, and put
 		// it back after so incoming calls will work
 
@@ -1824,7 +1827,6 @@ VOID SCSPoll(int Port)
 
 		// This doesn't seem to work
 
-/*
 
 		ConvFromAX25(Buffer + 7, ICall);		// Origin
 		strlop(ICall, ' ');
@@ -1867,7 +1869,7 @@ VOID SCSPoll(int Port)
 				1, Buffer,			// Flag CmdSet as Data
 				2, TNC->NodeCall);	// Flag as Chan 0 Command
 		}
-*/
+
 		ReleaseBuffer((UINT *)buffptr);
 		return;
 	}
@@ -3178,10 +3180,25 @@ VOID ProcessDEDFrame(struct TNCINFO * TNC, UCHAR * Msg, int framelen)
 	if (TNC->TNCOK == FALSE)
 	{
 		// Just come up
+
+		struct RIGPORTINFO * PORT;
 		
 		TNC->TNCOK = TRUE;
 		sprintf(TNC->WEB_COMMSSTATE,"%s TNC link OK", TNC->PortRecord->PORTCONTROL.SerialPortName);
 		SetWindowText(TNC->xIDC_COMMSSTATE, TNC->WEB_COMMSSTATE);
+
+		// If using an FT847 on PTC Port it needa a "Cat On" Command. Send it here
+
+		if (TNC->RIG->PORT && TNC->RIG->PORT->PTC)
+		{
+			PORT = TNC->RIG->PORT;
+
+			if (strcmp(PORT->Rigs[0].RigName, "FT847") == 0)
+			{
+				UCHAR CATON[6] = {0,0,0,0,0};
+				SendPTCRadioCommand(PORT->PTC, CATON, 5);
+			}
+		}
 	}
 
 	Stream = RealStream = Msg[2];

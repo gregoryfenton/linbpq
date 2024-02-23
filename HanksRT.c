@@ -77,6 +77,8 @@ char PopupText[260] = "";
 int PopupMode = 0;
 int chatPaclen = 236;
 
+int reportChatEvents = 0;
+
 char RtKnown[MAX_PATH] = "RTKnown.txt";
 char RtUsr[MAX_PATH] = "STUsers.txt";
 char RtUsrTemp[MAX_PATH] = "STUsers.tmp";
@@ -599,7 +601,9 @@ VOID ProcessChatLine(ChatCIRCUIT * conn, struct UserInfo * user, char* OrigBuffe
 		Buffer = BufferB;
 
 #else
-		int left = 65536;
+		size_t left = 65536;
+		size_t clen = len;
+
 		UCHAR * BufferBP = BufferB;
 		struct user_t * icu = conn->u.user;
 
@@ -607,22 +611,22 @@ VOID ProcessChatLine(ChatCIRCUIT * conn, struct UserInfo * user, char* OrigBuffe
 		{
 			if (icu->iconv_toUTF8 == NULL)
 			{
-				icu->iconv_toUTF8 = iconv_open("UTF-8", icu->Codepage);
+				icu->iconv_toUTF8 = iconv_open("UTF-8//IGNORE", icu->Codepage);
 			
 				if (icu->iconv_toUTF8 == (iconv_t)-1)
-					icu->iconv_toUTF8 = iconv_open("UTF-8", "CP1252");
+					icu->iconv_toUTF8 = iconv_open("UTF-8//IGNORE", "CP1252");
 			}
 
 			iconv(icu->iconv_toUTF8, NULL, NULL, NULL, NULL);		// Reset State Machine
-			iconv(icu->iconv_toUTF8, &Buffer, &len, (char ** __restrict__)&BufferBP, &left);
+			iconv(icu->iconv_toUTF8, &Buffer, &clen, (char ** __restrict__)&BufferBP, &left);
 		}
 		else
 		{
 			if (link_toUTF8 == NULL)
-				link_toUTF8 = iconv_open("UTF-8", "CP1252");
+				link_toUTF8 = iconv_open("UTF-8//IGNORE", "CP1252");
 
 			iconv(link_toUTF8, NULL, NULL, NULL, NULL);		// Reset State Machine
-			iconv(link_toUTF8, &Buffer, &len, (char ** __restrict__)&BufferBP, &left);
+			iconv(link_toUTF8, &Buffer, &clen, (char ** __restrict__)&BufferBP, &left);
 		}
 		len = 65536 - left;
 		Buffer = BufferB;
@@ -1123,12 +1127,12 @@ void rduser(USER *user)
 	// Open an iconv decriptor for each conversion
 
 	if (user->Codepage[0])
-		user->iconv_toUTF8 = iconv_open("UTF-8", user->Codepage);
+		user->iconv_toUTF8 = iconv_open("UTF-8//IGNORE", user->Codepage);
 	else
 		user->iconv_toUTF8 = (iconv_t)-1;
 				
 	if (user->iconv_toUTF8 == (iconv_t)-1)
-		user->iconv_toUTF8 = iconv_open("UTF-8", "CP1252");
+		user->iconv_toUTF8 = iconv_open("UTF-8//IGNORE", "CP1252");
 		
 
 	if (user->Codepage[0])
@@ -1137,7 +1141,7 @@ void rduser(USER *user)
 		user->iconv_fromUTF8 = (iconv_t)-1;
 
 	if (user->iconv_fromUTF8 == (iconv_t)-1)
-		user->iconv_fromUTF8 = iconv_open("CP1252", "UTF-8");
+		user->iconv_fromUTF8 = iconv_open("CP1252//IGNORE", "UTF-8");
 #endif
 	}
 }
@@ -1938,7 +1942,7 @@ void put_text(ChatCIRCUIT * circuit, USER * user, UCHAR * buf)
 {
 	UCHAR BufferB[4096];
 
-	// Text is UTF-8 internally. If use doen't want UTF-8. convert to Node's locale
+	// Text is UTF-8 internally. If user doen't want UTF-8. convert to Node's locale
 
 	if (circuit->u.user->rtflags & u_noUTF8)
 	{
@@ -1959,9 +1963,9 @@ void put_text(ChatCIRCUIT * circuit, USER * user, UCHAR * buf)
 		BufferB[blen + 2] = 0;
 #else
 
-		int left = 4096;
+		size_t left = 4096;
 		UCHAR * BufferBP = BufferB;
-		int len = strlen(buf) + 1;
+		size_t len = strlen(buf) + 1;
 		struct user_t * icu = circuit->u.user;
 
 		if (icu->iconv_fromUTF8 == NULL)
@@ -1969,7 +1973,7 @@ void put_text(ChatCIRCUIT * circuit, USER * user, UCHAR * buf)
 			icu->iconv_fromUTF8 = iconv_open(icu->Codepage, "UTF-8");
 		
 			if (icu->iconv_fromUTF8 == (iconv_t)-1)
-				icu->iconv_fromUTF8 = iconv_open("CP1252", "UTF-8");
+				icu->iconv_fromUTF8 = iconv_open("CP1252//IGNORE", "UTF-8");
 		}
 
 		iconv(icu->iconv_fromUTF8, NULL, NULL, NULL, NULL);		// Reset State Machine
@@ -2077,6 +2081,18 @@ void text_tellu_Joined(USER * user)
 
 	sprintf(buf, "%s%-6.6s : %s *** Joined Chat, Topic %s", Stamp, user->call, user->name, user->topic->name);
 
+	if (reportChatEvents)
+	{
+
+#ifdef WIN32
+	if (pRunEventProgram)
+		pRunEventProgram("ChatNewUser.exe", user->call);
+#else
+	sprintf(prog, "%s/%s", BPQDirectory, "ChatNewUser");
+	RunEventProgram(prog, user->call);
+#endif
+	}
+
 // Send it to all connected users in the same topic.
 // Echo to originator if requested.
 
@@ -2107,14 +2123,6 @@ void text_tellu_Joined(USER * user)
 				nputc(circuit, 7);
 
 		nputc(circuit, 13);
-
-#ifdef WIN32
-		if (pRunEventProgram)
-			pRunEventProgram("ChatNewUser.exe", user->call);
-#else
-		sprintf(prog, "%s/%s", BPQDirectory, "ChatNewUser");
-		RunEventProgram(prog, user->call);
-#endif
 	}
 }
 // Tell one link circuit about a local user change of topic.
@@ -4168,6 +4176,7 @@ BOOL GetChatConfig(char * ConfigName)
 
 	ChatApplNum = GetIntValue(group, "ApplNum");
 	MaxChatStreams = GetIntValue(group, "MaxStreams");
+	reportChatEvents = GetIntValue(group, "reportChatEvents");
 	chatPaclen = GetIntValue(group, "chatPaclen");
 	GetStringValue(group, "OtherChatNodes", OtherNodesList);
 	GetStringValue(group, "ChatWelcomeMsg", ChatWelcomeMsg);
@@ -4199,6 +4208,7 @@ VOID SaveChatConfigFile(char * ConfigName)
 
 	SaveIntValue(group, "ApplNum", ChatApplNum);
 	SaveIntValue(group, "MaxStreams", MaxChatStreams);
+	SaveIntValue(group, "reportChatEvents", reportChatEvents);
 	SaveIntValue(group, "chatPaclen", chatPaclen);
 	SaveStringValue(group, "OtherChatNodes", OtherNodesList);
 	SaveStringValue(group, "ChatWelcomeMsg", ChatWelcomeMsg);

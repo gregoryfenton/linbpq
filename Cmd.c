@@ -2172,6 +2172,7 @@ VOID CQCMD(TRANSPORTENTRY * Session, char * Bufferptr, char * CmdTail, CMDX * CM
 
 	ConvToAX25("CQ", CQCALL);
 	memcpy(Msg.DEST, CQCALL, 7);
+	Msg.DEST[6] |= 0x80;			// set Command Bit
 	memcpy(Msg.ORIGIN, Session->L4USER, 7);
 	Msg.ORIGIN[6] ^= 0x1e;					// Flip SSID
 	Msg.PID = 0xf0;							// Data PID
@@ -3691,6 +3692,13 @@ VOID MHCMD(TRANSPORTENTRY * Session, char * Bufferptr, char * CmdTail, CMDX * CM
 
 	ptr = strtok_s(CmdTail, " ", &Context);
 
+	if (ptr == NULL  || ptr[0] == 0)
+	{
+		Bufferptr = Cmdprintf(Session, Bufferptr, "Port Number needed eg MH 1\r");
+		SendCommandReply(Session, REPLYBUFFER, (int)(Bufferptr - (char *)REPLYBUFFER));
+		return;
+	}
+
 	if (ptr)
 		Port = atoi(ptr);
 
@@ -4152,7 +4160,7 @@ VOID ATTACHCMD(TRANSPORTENTRY * Session, char * Bufferptr, char * CmdTail, CMDX 
 				if (OtherTNC == TNC)
 					continue;
 
-				if (rxInterlock == OtherTNC->RXRadio || txInterlock == OtherTNC->TXRadio)	// Same Group	
+				if (rxInterlock && rxInterlock == OtherTNC->RXRadio || txInterlock && txInterlock == OtherTNC->TXRadio)	// Same Group	
 				{
 					int n;
 
@@ -4722,6 +4730,7 @@ VOID InnerCommandHandler(TRANSPORTENTRY * Session, struct DATAMESSAGE * Buffer)
 		Msg.PORT = Port;
 		Msg.CTL = 3;			// UI
 		memcpy(Msg.DEST, Session->UADDRESS, 7);
+		Msg.DEST[6] |= 0x80;			// set Command Bit
 		memcpy(Msg.ORIGIN, Session->L4USER, 7);
 		memcpy(Msg.DIGIS, &Session->UADDRESS[7], Session->UAddrLen - 7);
 		memcpy(&Msg.PID, &Buffer->PID, Len);
@@ -5797,6 +5806,7 @@ VOID HELPCMD(TRANSPORTENTRY * Session, char * Bufferptr, char * CmdTail, CMDX * 
 
 int UZ7HOSetFreq(int port, struct TNCINFO * TNC, struct AGWINFO * AGW, PDATAMESSAGE buff, PMSGWITHLEN buffptr);
 int UZ7HOSetModem(int port, struct TNCINFO * TNC, struct AGWINFO * AGW, PDATAMESSAGE buff, PMSGWITHLEN buffptr);
+int UZ7HOSetFlags(int port, struct TNCINFO * TNC, struct AGWINFO * AGW, PDATAMESSAGE buff, PMSGWITHLEN buffptr);
 
 
 VOID UZ7HOCMD(TRANSPORTENTRY * Session, char * Bufferptr, char * CmdTail, CMDX * CMD)
@@ -5830,7 +5840,7 @@ VOID UZ7HOCMD(TRANSPORTENTRY * Session, char * Bufferptr, char * CmdTail, CMDX *
 		return;
 	}
 
-	if (_memicmp(Cmd, "FREQ", 4) == 0 || _memicmp(Cmd, "MODEM", 5) == 0)
+	if (_memicmp(Cmd, "FREQ", 4) == 0 || _memicmp(Cmd, "MODEM", 5) == 0 || _memicmp(Cmd, "FLAGS", 5) == 0)
 	{
 		// Pass to procesing code in UZ7HO driver. This expects command in a PDATAMESSAGE amd places response in a PMSGWITHLEN buffer
 
@@ -5852,6 +5862,8 @@ VOID UZ7HOCMD(TRANSPORTENTRY * Session, char * Bufferptr, char * CmdTail, CMDX *
 
 		if (_memicmp(Cmd, "FREQ", 4) == 0)
 			UZ7HOSetFreq(port, TNC, AGW, buff, buffptr);
+		else if (_memicmp(Cmd, "FLAGS", 5) == 0)
+			UZ7HOSetFlags(port, TNC, AGW, buff, buffptr);
 		else
 			UZ7HOSetModem(port, TNC, AGW, buff, buffptr);
 
@@ -5862,7 +5874,7 @@ VOID UZ7HOCMD(TRANSPORTENTRY * Session, char * Bufferptr, char * CmdTail, CMDX *
 		ReleaseBuffer(buffptr);
 	}
 	else
-		Bufferptr = Cmdprintf(Session, Bufferptr, "Invalid UZ7HO Command (not Freq or Modem)\r");
+		Bufferptr = Cmdprintf(Session, Bufferptr, "Invalid UZ7HO Command (not Freq Modem or FLAGS)\r");
 	
 	SendCommandReply(Session, REPLYBUFFER, (int)(Bufferptr - (char *)REPLYBUFFER));
 	return;
